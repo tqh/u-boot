@@ -1,0 +1,33 @@
+name: Mele A1000/A2000 Build
+on:
+  push:
+    branches: [ "*" ]
+
+jobs:
+  build:
+    name: Mele A1000/A2000 Build
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Install build Packages
+      run: sudo apt-get install -qq --no-install-recommends gcc-arm-linux-gnueabihf
+    - name: Checkout Source
+      uses: actions/checkout@v3
+    - name: Setup Mele A1000 default configuration
+      run: make Mele_A1000_defconfig
+    - name: Tune Mele A1000 configuration
+      run: |
+        cat - > .tuned_config << EOF
+        CONFIG_BOOTDELAY=0
+        CONFIG_DRAM_CLK=408
+        CONFIG_LTO=y
+        EOF
+        ./scripts/kconfig/merge_config.sh '.config' '.tuned_config'
+    - name: Build
+      env:
+        CROSS_COMPILE: arm-linux-gnueabihf-
+      run: make -j4
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: u-boot-sunxi-with-spl
+        path: u-boot-sunxi-with-spl.bin
