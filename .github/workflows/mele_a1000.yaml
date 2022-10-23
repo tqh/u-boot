@@ -18,8 +18,10 @@ jobs:
       run: |
         cat - > .tuned_config << EOF
         CONFIG_BOOTDELAY=0
-        CONFIG_DRAM_CLK=408
+        CONFIG_DRAM_CLK=480
         CONFIG_LTO=y
+        CONFIG_DRAM_EMR1=4
+        
         EOF
         ./scripts/kconfig/merge_config.sh '.config' '.tuned_config'
     - name: Build
