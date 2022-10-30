@@ -19,6 +19,7 @@ jobs:
         cat - > .tuned_config << EOF
         CONFIG_BOOTDELAY=0
         CONFIG_DRAM_CLK=480
+        CONFIG_AXP_DCDC3_VOLT=1300
         CONFIG_LTO=y
         
         EOF
