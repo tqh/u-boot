@@ -86,6 +86,7 @@ config SYS_CBSIZE
 
 config SYS_PBSIZE
 	int "Buffer size for console output"
+	default 1024 if ARCH_SUNXI
 	default 1044
 
 config SYS_XTRACE
@@ -1840,6 +1841,14 @@ config CMD_LINK_LOCAL
 	select LIB_RAND
 	help
 	  Acquire a network IP address using the link-local protocol
+
+config CMD_NCSI
+	bool "ncsi"
+	depends on PHY_NCSI
+	help
+	  Manually configure the attached NIC via NC-SI.
+	  Normally this happens automatically before other network
+	  operations.
 
 endif
 

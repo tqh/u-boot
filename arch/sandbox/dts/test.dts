@@ -932,6 +932,10 @@
 		};
 	};
 
+	memory-controller {
+		compatible = "sandbox,memory";
+	};
+
 	misc-test {
 		#address-cells = <1>;
 		#size-cells = <1>;
@@ -1125,10 +1129,12 @@
 
 	reset@0 {
 		compatible = "sandbox,warm-reset";
+		u-boot,dm-pre-proper;
 	};
 
 	reset@1 {
 		compatible = "sandbox,reset";
+		u-boot,dm-pre-proper;
 	};
 
 	resetc: reset-ctl {
