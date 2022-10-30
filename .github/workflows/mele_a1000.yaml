@@ -14,13 +14,21 @@ jobs:
       uses: actions/checkout@v3
     - name: Setup Mele A1000 default configuration
       run: make Mele_A1000_defconfig
+
+#        CONFIG_AXP_DCDC3_VOLT=1300
+
     - name: Tune Mele A1000 configuration
       run: |
         cat - > .tuned_config << EOF
         CONFIG_BOOTDELAY=0
         CONFIG_DRAM_CLK=480
-        CONFIG_AXP_DCDC3_VOLT=1300
         CONFIG_LTO=y
+        CONFIG_DRAM_ODT_EN=3
+        CONFIG_DRAM_ZQ=17688576
+        CONFIG_DRAM_TPR3=0
+        CONFIG_DRAM_EMR1=4
+        CONFIG_DRAM_DQS_GATING_DELAY=0x06060606
+        CONFIG_DRAM_TIMINGS_DDR3_1066F_1333H=y
         
         EOF
         ./scripts/kconfig/merge_config.sh '.config' '.tuned_config'
