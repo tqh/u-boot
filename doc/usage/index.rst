@@ -48,7 +48,9 @@ Shell commands
    cmd/fatinfo
    cmd/fatload
    cmd/fdt
+   cmd/font
    cmd/for
+   cmd/fwu_mdata
    cmd/gpio
    cmd/load
    cmd/loadm

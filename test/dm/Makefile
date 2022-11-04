@@ -48,6 +48,7 @@ obj-$(CONFIG_FASTBOOT_FLASH_MMC) += fastboot.o
 endif
 obj-$(CONFIG_FIRMWARE) += firmware.o
 obj-$(CONFIG_DM_FPGA) += fpga.o
+obj-$(CONFIG_FWU_MDATA_GPT_BLK) += fwu_mdata.o
 obj-$(CONFIG_DM_HWSPINLOCK) += hwspinlock.o
 obj-$(CONFIG_DM_I2C) += i2c.o
 obj-$(CONFIG_SOUND) += i2s.o
@@ -69,7 +70,7 @@ obj-y += ofnode.o
 obj-y += ofread.o
 obj-y += of_extra.o
 obj-$(CONFIG_OSD) += osd.o
-obj-$(CONFIG_DM_VIDEO) += panel.o
+obj-$(CONFIG_VIDEO) += panel.o
 obj-$(CONFIG_EFI_PARTITION) += part.o
 obj-$(CONFIG_PCI) += pci.o
 obj-$(CONFIG_P2SB) += p2sb.o
@@ -112,7 +113,7 @@ obj-$(CONFIG_TEE) += tee.o
 obj-$(CONFIG_TIMER) += timer.o
 obj-$(CONFIG_TPM_V2) += tpm.o
 obj-$(CONFIG_DM_USB) += usb.o
-obj-$(CONFIG_DM_VIDEO) += video.o
+obj-$(CONFIG_VIDEO) += video.o
 ifeq ($(CONFIG_VIRTIO_SANDBOX),y)
 obj-y += virtio.o
 obj-$(CONFIG_VIRTIO_RNG) += virtio_device.o
