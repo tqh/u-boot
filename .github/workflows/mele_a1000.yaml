@@ -19,13 +19,20 @@ jobs:
         cat - > .tuned_config << EOF
         CONFIG_LTO=y
         CONFIG_BOOTDELAY=0
-        CONFIG_DRAM_CLK=480
-        CONFIG_DRAM_ODT_EN=3
-        CONFIG_DRAM_ZQ=17688576
-        CONFIG_DRAM_TPR3=0
-        CONFIG_DRAM_DQS_GATING_DELAY=0x06060606
+        #1300 causes mem failuers at 550MHz
+        #Also needs EMR2 RTT_WR RZQ/2 120Ω patch
+        CONFIG_AXP_DCDC3_VOLT=1350
+        CONFIG_DRAM_CLK=550
         CONFIG_DRAM_TIMINGS_DDR3_1066F_1333H=y
-        CONFIG_AXP_DCDC3_VOLT=1300
+        CONFIG_DRAM_ODT_EN=y
+        #RTT_Nom are bits at 9,6,2, Output Drive Strength (ODS) is 5 and 1
+        # So we end up with 011 - RZQ/6 40Ω for RTT and 01 - ODS = RZQ/7 34Ω
+        # 1000110 = 64 + 4 + 2 = 70
+        CONFIG_DRAM_EMR1=70
+        # Seems to work well on autodetect
+        CONFIG_DRAM_TPR3=0
+        # Seems to work well, not investigated
+        CONFIG_DRAM_DQS_GATING_DELAY=0x06060606
         EOF
         ./scripts/kconfig/merge_config.sh '.config' '.tuned_config'
     - name: Build
