@@ -91,6 +91,8 @@
 #include <image.h>
 #include <log.h>
 #include <net.h>
+#include <net6.h>
+#include <ndisc.h>
 #include <net/fastboot.h>
 #include <net/tftp.h>
 #include <net/ncsi.h>
@@ -104,6 +106,7 @@
 #endif
 #include <watchdog.h>
 #include <linux/compiler.h>
+#include <test/test.h>
 #include "arp.h"
 #include "bootp.h"
 #include "cdp.h"
@@ -117,6 +120,8 @@
 #if defined(CONFIG_CMD_WOL)
 #include "wol.h"
 #endif
+#include <net/tcp.h>
+#include <net/wget.h>
 
 /** BOOTP EXTENTIONS **/
 
@@ -341,8 +346,17 @@ void net_auto_load(void)
 
 static int net_init_loop(void)
 {
-	if (eth_get_dev())
+	if (eth_get_dev()) {
 		memcpy(net_ethaddr, eth_get_ethaddr(), 6);
+
+		if (IS_ENABLED(CONFIG_IPV6)) {
+			ip6_make_lladdr(&net_link_local_ip6, net_ethaddr);
+			if (!memcmp(&net_ip6, &net_null_addr_ip6,
+				    sizeof(struct in6_addr)))
+				memcpy(&net_ip6, &net_link_local_ip6,
+				       sizeof(struct in6_addr));
+		}
+	}
 	else
 		/*
 		 * Not ideal, but there's no way to get the actual error, and I
@@ -383,10 +397,13 @@ int net_init(void)
 				(i + 1) * PKTSIZE_ALIGN;
 		}
 		arp_init();
+		ndisc_init();
 		net_clear_handlers();
 
 		/* Only need to setup buffer pointers once. */
 		first_call = 0;
+		if (IS_ENABLED(CONFIG_PROT_TCP))
+			tcp_set_tcp_state(TCP_CLOSED);
 	}
 
 	return net_init_loop();
@@ -449,6 +466,9 @@ restart:
 	debug_cond(DEBUG_INT_STATE, "--- net_loop Init\n");
 	net_init_loop();
 
+	if (!test_eth_enabled())
+		return 0;
+
 	switch (net_check_prereq(protocol)) {
 	case 1:
 		/* network not configured */
@@ -509,9 +529,19 @@ restart:
 			ping_start();
 			break;
 #endif
+#if defined(CONFIG_CMD_PING6)
+		case PING6:
+			ping6_start();
+			break;
+#endif
 #if defined(CONFIG_CMD_NFS) && !defined(CONFIG_SPL_BUILD)
 		case NFS:
 			nfs_start();
+			break;
+#endif
+#if defined(CONFIG_CMD_WGET)
+		case WGET:
+			wget_start();
 			break;
 #endif
 #if defined(CONFIG_CMD_CDP)
@@ -579,6 +609,11 @@ restart:
 		schedule();
 		if (arp_timeout_check() > 0)
 			time_start = get_timer(0);
+
+		if (IS_ENABLED(CONFIG_IPV6)) {
+			if (use_ip6 && (ndisc_timeout_check() > 0))
+				time_start = get_timer(0);
+		}
 
 		/*
 		 *	Check the ethernet for a new packet.  The ethernet
@@ -833,6 +868,16 @@ int net_send_udp_packet(uchar *ether, struct in_addr dest, int dport, int sport,
 				  IPPROTO_UDP, 0, 0, 0);
 }
 
+#if defined(CONFIG_PROT_TCP)
+int net_send_tcp_packet(int payload_len, int dport, int sport, u8 action,
+			u32 tcp_seq_num, u32 tcp_ack_num)
+{
+	return net_send_ip_packet(net_server_ethaddr, net_server_ip, dport,
+				  sport, payload_len, IPPROTO_TCP, action,
+				  tcp_seq_num, tcp_ack_num);
+}
+#endif
+
 int net_send_ip_packet(uchar *ether, struct in_addr dest, int dport, int sport,
 		       int payload_len, int proto, u8 action, u32 tcp_seq_num,
 		       u32 tcp_ack_num)
@@ -864,6 +909,14 @@ int net_send_ip_packet(uchar *ether, struct in_addr dest, int dport, int sport,
 				   payload_len);
 		pkt_hdr_size = eth_hdr_size + IP_UDP_HDR_SIZE;
 		break;
+#if defined(CONFIG_PROT_TCP)
+	case IPPROTO_TCP:
+		pkt_hdr_size = eth_hdr_size
+			+ tcp_set_tcp_header(pkt + eth_hdr_size, dport, sport,
+					     payload_len, action, tcp_seq_num,
+					     tcp_ack_num);
+		break;
+#endif
 	default:
 		return -EINVAL;
 	}
@@ -924,7 +977,11 @@ static struct ip_udp_hdr *__net_defragment(struct ip_udp_hdr *ip, int *lenp)
 	int offset8, start, len, done = 0;
 	u16 ip_off = ntohs(ip->ip_off);
 
-	if (ip->ip_len < IP_MIN_FRAG_DATAGRAM_SIZE)
+	/*
+	 * Calling code already rejected <, but we don't have to deal
+	 * with an IP fragment with no payload.
+	 */
+	if (ntohs(ip->ip_len) <= IP_HDR_SIZE)
 		return NULL;
 
 	/* payload starts after IP header, this fragment is in there */
@@ -933,6 +990,10 @@ static struct ip_udp_hdr *__net_defragment(struct ip_udp_hdr *ip, int *lenp)
 	thisfrag = payload + offset8;
 	start = offset8 * 8;
 	len = ntohs(ip->ip_len) - IP_HDR_SIZE;
+
+	/* All but last fragment must have a multiple-of-8 payload. */
+	if ((len & 7) && (ip_off & IP_FLAGS_MFRAG))
+		return NULL;
 
 	if (start + len > IP_MAXUDP) /* fragment extends too far */
 		return NULL;
@@ -977,10 +1038,14 @@ static struct ip_udp_hdr *__net_defragment(struct ip_udp_hdr *ip, int *lenp)
 	}
 
 	/*
-	 * There is some overlap: fix the hole list. This code doesn't
-	 * deal with a fragment that overlaps with two different holes
-	 * (thus being a superset of a previously-received fragment).
+	 * There is some overlap: fix the hole list. This code deals
+	 * with a fragment that overlaps with two different holes
+	 * (thus being a superset of a previously-received fragment)
+	 * by only using the part of the fragment that fits in the
+	 * first hole.
 	 */
+	if (h->last_byte < start + len)
+		len = h->last_byte - start;
 
 	if ((h >= thisfrag) && (h->last_byte <= start + len)) {
 		/* complete overlap with hole: remove hole */
@@ -1032,8 +1097,8 @@ static struct ip_udp_hdr *__net_defragment(struct ip_udp_hdr *ip, int *lenp)
 	if (!done)
 		return NULL;
 
-	localip->ip_len = htons(total_len);
 	*lenp = total_len + IP_HDR_SIZE;
+	localip->ip_len = htons(*lenp);
 	return localip;
 }
 
@@ -1205,12 +1270,17 @@ void net_process_received_packet(uchar *in_packet, int len)
 		rarp_receive(ip, len);
 		break;
 #endif
+#if IS_ENABLED(CONFIG_IPV6)
+	case PROT_IP6:
+		net_ip6_handler(et, (struct ip6_hdr *)ip, len);
+		break;
+#endif
 	case PROT_IP:
 		debug_cond(DEBUG_NET_PKT, "Got IP\n");
 		/* Before we start poking the header, make sure it is there */
-		if (len < IP_UDP_HDR_SIZE) {
+		if (len < IP_HDR_SIZE) {
 			debug("len bad %d < %lu\n", len,
-			      (ulong)IP_UDP_HDR_SIZE);
+			      (ulong)IP_HDR_SIZE);
 			return;
 		}
 		/* Check the packet length */
@@ -1219,6 +1289,10 @@ void net_process_received_packet(uchar *in_packet, int len)
 			return;
 		}
 		len = ntohs(ip->ip_len);
+		if (len < IP_HDR_SIZE) {
+			debug("bad ip->ip_len %d < %d\n", len, (int)IP_HDR_SIZE);
+			return;
+		}
 		debug_cond(DEBUG_NET_PKT, "len=%d, v=%02x\n",
 			   len, ip->ip_hl_v & 0xff);
 
@@ -1226,7 +1300,7 @@ void net_process_received_packet(uchar *in_packet, int len)
 		if ((ip->ip_hl_v & 0xf0) != 0x40)
 			return;
 		/* Can't deal with IP options (headers != 20 bytes) */
-		if ((ip->ip_hl_v & 0x0f) > 0x05)
+		if ((ip->ip_hl_v & 0x0f) != 0x05)
 			return;
 		/* Check the Checksum of the header */
 		if (!ip_checksum_ok((uchar *)ip, IP_HDR_SIZE)) {
@@ -1273,11 +1347,20 @@ void net_process_received_packet(uchar *in_packet, int len)
 		if (ip->ip_p == IPPROTO_ICMP) {
 			receive_icmp(ip, len, src_ip, et);
 			return;
+#if defined(CONFIG_PROT_TCP)
+		} else if (ip->ip_p == IPPROTO_TCP) {
+			debug_cond(DEBUG_DEV_PKT,
+				   "TCP PH (to=%pI4, from=%pI4, len=%d)\n",
+				   &dst_ip, &src_ip, len);
+
+			rxhand_tcp_f((union tcp_build_pkt *)ip, len);
+			return;
+#endif
 		} else if (ip->ip_p != IPPROTO_UDP) {	/* Only UDP packets */
 			return;
 		}
 
-		if (ntohs(ip->udp_len) < UDP_HDR_SIZE || ntohs(ip->udp_len) > ntohs(ip->ip_len))
+		if (ntohs(ip->udp_len) < UDP_HDR_SIZE || ntohs(ip->udp_len) > len - IP_HDR_SIZE)
 			return;
 
 		debug_cond(DEBUG_DEV_PKT,
@@ -1361,6 +1444,14 @@ static int net_check_prereq(enum proto_t protocol)
 		}
 		goto common;
 #endif
+#if defined(CONFIG_CMD_PING6)
+	case PING6:
+		if (ip6_is_unspecified_addr(&net_ping_ip6)) {
+			puts("*** ERROR: ping address not given\n");
+			return 1;
+		}
+		goto common;
+#endif
 #if defined(CONFIG_CMD_DNS)
 	case DNS:
 		if (net_dns_server.s_addr == 0) {
@@ -1382,7 +1473,14 @@ static int net_check_prereq(enum proto_t protocol)
 		/* Fall through */
 	case TFTPGET:
 	case TFTPPUT:
-		if (net_server_ip.s_addr == 0 && !is_serverip_in_cmd()) {
+		if (IS_ENABLED(CONFIG_IPV6) && use_ip6) {
+			if (!memcmp(&net_server_ip6, &net_null_addr_ip6,
+				    sizeof(struct in6_addr)) &&
+				    !strchr(net_boot_file_name, '[')) {
+				puts("*** ERROR: `serverip6' not set\n");
+				return 1;
+			}
+		} else if (net_server_ip.s_addr == 0 && !is_serverip_in_cmd()) {
 			puts("*** ERROR: `serverip' not set\n");
 			return 1;
 		}
@@ -1395,7 +1493,13 @@ common:
 	case NETCONS:
 	case FASTBOOT:
 	case TFTPSRV:
-		if (net_ip.s_addr == 0) {
+		if (IS_ENABLED(CONFIG_IPV6) && use_ip6) {
+			if (!memcmp(&net_link_local_ip6, &net_null_addr_ip6,
+				    sizeof(struct in6_addr))) {
+				puts("*** ERROR: `ip6addr` not set\n");
+				return 1;
+			}
+		} else if (net_ip.s_addr == 0) {
 			puts("*** ERROR: `ipaddr' not set\n");
 			return 1;
 		}

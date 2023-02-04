@@ -6,6 +6,7 @@
  */
 
 #include <ansi.h>
+#include <cli.h>
 #include <common.h>
 #include <charset.h>
 #include <efi_loader.h>
@@ -21,9 +22,21 @@
 #include <linux/delay.h>
 
 static struct efi_simple_text_input_protocol *cin;
+const char *eficonfig_menu_desc =
+	"  Press UP/DOWN to move, ENTER to select, ESC/CTRL+C to quit";
+
+static const char *eficonfig_change_boot_order_desc =
+	"  Press UP/DOWN to move, +/- to change orde\n"
+	"  Press SPACE to activate or deactivate the entry\n"
+	"  Select [Save] to complete, ESC/CTRL+C to quit";
+
+static struct efi_simple_text_output_protocol *cout;
+static int avail_row;
 
 #define EFICONFIG_DESCRIPTION_MAX 32
 #define EFICONFIG_OPTIONAL_DATA_MAX 64
+#define EFICONFIG_MENU_HEADER_ROW_NUM 3
+#define EFICONFIG_MENU_DESC_ROW_NUM 5
 
 /**
  * struct eficonfig_filepath_info - structure to be used to store file path
@@ -93,21 +106,50 @@ struct eficonfig_boot_selection_data {
 };
 
 /**
- * struct eficonfig_boot_order - structure to be used to update BootOrder variable
+ * struct eficonfig_boot_order_data - structure to be used to update BootOrder variable
  *
- * @num:		index in the menu entry
- * @description:	pointer to the description string
  * @boot_index:		boot option index
  * @active:		flag to include the boot option into BootOrder variable
- * @list:		list structure
  */
-struct eficonfig_boot_order {
-	u32 num;
-	u16 *description;
+struct eficonfig_boot_order_data {
 	u32 boot_index;
 	bool active;
-	struct list_head list;
 };
+
+/**
+ * struct eficonfig_save_boot_order_data - structure to be used to change boot order
+ *
+ * @efi_menu:		pointer to efimenu structure
+ * @selected:		flag to indicate user selects "Save" entry
+ */
+struct eficonfig_save_boot_order_data {
+	struct efimenu *efi_menu;
+	bool selected;
+};
+
+/**
+ * struct eficonfig_menu_adjust - update start and end entry index
+ *
+ * @efi_menu:	pointer to efimenu structure
+ * @add:	flag to add or substract the index
+ */
+static void eficonfig_menu_adjust(struct efimenu *efi_menu, bool add)
+{
+	if (add)
+		++efi_menu->active;
+	else
+		--efi_menu->active;
+
+	if (add && efi_menu->end < efi_menu->active) {
+		efi_menu->start++;
+		efi_menu->end++;
+	} else if (!add && efi_menu->start > efi_menu->active) {
+		efi_menu->start--;
+		efi_menu->end--;
+	}
+}
+#define eficonfig_menu_up(_a) eficonfig_menu_adjust(_a, false)
+#define eficonfig_menu_down(_a) eficonfig_menu_adjust(_a, true)
 
 /**
  * eficonfig_print_msg() - print message
@@ -139,23 +181,21 @@ void eficonfig_print_msg(char *msg)
  *
  * @data:	pointer to the data associated with each menu entry
  */
-static void eficonfig_print_entry(void *data)
+void eficonfig_print_entry(void *data)
 {
 	struct eficonfig_entry *entry = data;
-	int reverse = (entry->efi_menu->active == entry->num);
+	bool reverse = (entry->efi_menu->active == entry->num);
 
-	/* TODO: support scroll or page for many entries */
+	if (entry->efi_menu->start > entry->num || entry->efi_menu->end < entry->num)
+		return;
 
-	/*
-	 * Move cursor to line where the entry will be drawn (entry->num)
-	 * First 3 lines(menu header) + 1 empty line
-	 */
-	printf(ANSI_CURSOR_POSITION, entry->num + 4, 7);
+	printf(ANSI_CURSOR_POSITION, (entry->num - entry->efi_menu->start) +
+	       EFICONFIG_MENU_HEADER_ROW_NUM + 1, 7);
 
 	if (reverse)
 		puts(ANSI_COLOR_REVERSE);
 
-	printf("%s", entry->title);
+	printf(ANSI_CLEAR_LINE "%s", entry->title);
 
 	if (reverse)
 		puts(ANSI_COLOR_RESET);
@@ -166,7 +206,7 @@ static void eficonfig_print_entry(void *data)
  *
  * @m:	pointer to the menu structure
  */
-static void eficonfig_display_statusline(struct menu *m)
+void eficonfig_display_statusline(struct menu *m)
 {
 	struct eficonfig_entry *entry;
 
@@ -176,10 +216,10 @@ static void eficonfig_display_statusline(struct menu *m)
 	printf(ANSI_CURSOR_POSITION
 	      "\n%s\n"
 	       ANSI_CURSOR_POSITION ANSI_CLEAR_LINE ANSI_CURSOR_POSITION
-	       "  Press UP/DOWN to move, ENTER to select, ESC/CTRL+C to quit"
-	       ANSI_CLEAR_LINE_TO_END ANSI_CURSOR_POSITION ANSI_CLEAR_LINE,
-	       1, 1, entry->efi_menu->menu_header, entry->efi_menu->count + 5, 1,
-	       entry->efi_menu->count + 6, 1, entry->efi_menu->count + 7, 1);
+	       "%s"
+	       ANSI_CLEAR_LINE_TO_END,
+	       1, 1, entry->efi_menu->menu_header, avail_row + 4, 1,
+	       avail_row + 5, 1, entry->efi_menu->menu_desc);
 }
 
 /**
@@ -188,36 +228,40 @@ static void eficonfig_display_statusline(struct menu *m)
  * @data:	pointer to the efimenu structure
  * Return:	key string to identify the selected entry
  */
-static char *eficonfig_choice_entry(void *data)
+char *eficonfig_choice_entry(void *data)
 {
-	int esc = 0;
+	struct cli_ch_state s_cch, *cch = &s_cch;
 	struct list_head *pos, *n;
 	struct eficonfig_entry *entry;
-	enum bootmenu_key key = KEY_NONE;
+	enum bootmenu_key key = BKEY_NONE;
 	struct efimenu *efi_menu = data;
 
+	cli_ch_init(cch);
+
 	while (1) {
-		bootmenu_loop((struct bootmenu_data *)efi_menu, &key, &esc);
+		key = bootmenu_loop((struct bootmenu_data *)efi_menu, cch);
 
 		switch (key) {
-		case KEY_UP:
+		case BKEY_UP:
 			if (efi_menu->active > 0)
-				--efi_menu->active;
+				eficonfig_menu_up(efi_menu);
+
 			/* no menu key selected, regenerate menu */
 			return NULL;
-		case KEY_DOWN:
+		case BKEY_DOWN:
 			if (efi_menu->active < efi_menu->count - 1)
-				++efi_menu->active;
+				eficonfig_menu_down(efi_menu);
+
 			/* no menu key selected, regenerate menu */
 			return NULL;
-		case KEY_SELECT:
+		case BKEY_SELECT:
 			list_for_each_safe(pos, n, &efi_menu->list) {
 				entry = list_entry(pos, struct eficonfig_entry, list);
 				if (entry->num == efi_menu->active)
 					return entry->key;
 			}
 			break;
-		case KEY_QUIT:
+		case BKEY_QUIT:
 			/* Quit by choosing the last entry */
 			entry = list_last_entry(&efi_menu->list, struct eficonfig_entry, list);
 			return entry->key;
@@ -263,7 +307,7 @@ efi_status_t eficonfig_process_quit(void *data)
 }
 
 /**
- * append_entry() - append menu item
+ * eficonfig_append_menu_entry() - append menu item
  *
  * @efi_menu:	pointer to the efimenu structure
  * @title:	pointer to the entry title
@@ -271,8 +315,9 @@ efi_status_t eficonfig_process_quit(void *data)
  * @data:	pointer to the data to be passed to each entry callback
  * Return:	status code
  */
-static efi_status_t append_entry(struct efimenu *efi_menu,
-				 char *title, eficonfig_entry_func func, void *data)
+efi_status_t eficonfig_append_menu_entry(struct efimenu *efi_menu,
+					 char *title, eficonfig_entry_func func,
+					 void *data)
 {
 	struct eficonfig_entry *entry;
 
@@ -295,12 +340,12 @@ static efi_status_t append_entry(struct efimenu *efi_menu,
 }
 
 /**
- * append_quit_entry() - append quit entry
+ * eficonfig_append_quit_entry() - append quit entry
  *
  * @efi_menu:	pointer to the efimenu structure
  * Return:	status code
  */
-static efi_status_t append_quit_entry(struct efimenu *efi_menu)
+efi_status_t eficonfig_append_quit_entry(struct efimenu *efi_menu)
 {
 	char *title;
 	efi_status_t ret;
@@ -309,7 +354,7 @@ static efi_status_t append_quit_entry(struct efimenu *efi_menu)
 	if (!title)
 		return EFI_OUT_OF_RESOURCES;
 
-	ret = append_entry(efi_menu, title, eficonfig_process_quit, NULL);
+	ret = eficonfig_append_menu_entry(efi_menu, title, eficonfig_process_quit, NULL);
 	if (ret != EFI_SUCCESS)
 		free(title);
 
@@ -341,7 +386,7 @@ void *eficonfig_create_fixed_menu(const struct eficonfig_item *items, int count)
 		if (!title)
 			goto out;
 
-		ret = append_entry(efi_menu, title, iter->func, iter->data);
+		ret = eficonfig_append_menu_entry(efi_menu, title, iter->func, iter->data);
 		if (ret != EFI_SUCCESS) {
 			free(title);
 			goto out;
@@ -363,9 +408,17 @@ out:
  *
  * @efi_menu:		pointer to the efimenu structure
  * @menu_header:	pointer to the menu header string
+ * @menu_desc:		pointer to the menu description
+ * @display_statusline:	function pointer to draw statusline
+ * @item_data_print:	function pointer to draw the menu item
+ * @item_choice:	function pointer to handle the key press
  * Return:		status code
  */
-efi_status_t eficonfig_process_common(struct efimenu *efi_menu, char *menu_header)
+efi_status_t eficonfig_process_common(struct efimenu *efi_menu,
+				      char *menu_header, const char *menu_desc,
+				      void (*display_statusline)(struct menu *),
+				      void (*item_data_print)(void *),
+				      char *(*item_choice)(void *))
 {
 	struct menu *menu;
 	void *choice = NULL;
@@ -378,16 +431,19 @@ efi_status_t eficonfig_process_common(struct efimenu *efi_menu, char *menu_heade
 
 	efi_menu->delay = -1;
 	efi_menu->active = 0;
+	efi_menu->start = 0;
+	efi_menu->end = avail_row - 1;
 
 	if (menu_header) {
 		efi_menu->menu_header = strdup(menu_header);
 		if (!efi_menu->menu_header)
 			return EFI_OUT_OF_RESOURCES;
 	}
+	if (menu_desc)
+		efi_menu->menu_desc = menu_desc;
 
-	menu = menu_create(NULL, 0, 1, eficonfig_display_statusline,
-			   eficonfig_print_entry, eficonfig_choice_entry,
-			   efi_menu);
+	menu = menu_create(NULL, 0, 1, display_statusline, item_data_print,
+			   item_choice, efi_menu);
 	if (!menu)
 		return EFI_INVALID_PARAMETER;
 
@@ -441,14 +497,15 @@ static efi_status_t eficonfig_volume_selected(void *data)
 }
 
 /**
- * create_selected_device_path() - create device path
+ * eficonfig_create_device_path() - create device path
  *
- * @file_info:	pointer to the selected file information
+ * @dp_volume:	pointer to the volume
+ * @current_path: pointer to the file path u16 string
  * Return:
  * device path or NULL. Caller must free the returned value
  */
-static
-struct efi_device_path *create_selected_device_path(struct eficonfig_select_file_info *file_info)
+struct efi_device_path *eficonfig_create_device_path(struct efi_device_path *dp_volume,
+						     u16 *current_path)
 {
 	char *p;
 	void *buf;
@@ -456,8 +513,7 @@ struct efi_device_path *create_selected_device_path(struct eficonfig_select_file
 	struct efi_device_path *dp;
 	struct efi_device_path_file_path *fp;
 
-	fp_size = sizeof(struct efi_device_path) +
-		  ((u16_strlen(file_info->current_path) + 1) * sizeof(u16));
+	fp_size = sizeof(struct efi_device_path) + u16_strsize(current_path);
 	buf = calloc(1, fp_size + sizeof(END));
 	if (!buf)
 		return NULL;
@@ -466,13 +522,13 @@ struct efi_device_path *create_selected_device_path(struct eficonfig_select_file
 	fp->dp.type = DEVICE_PATH_TYPE_MEDIA_DEVICE,
 	fp->dp.sub_type = DEVICE_PATH_SUB_TYPE_FILE_PATH,
 	fp->dp.length = (u16)fp_size;
-	u16_strcpy(fp->str, file_info->current_path);
+	u16_strcpy(fp->str, current_path);
 
 	p = buf;
 	p += fp_size;
 	*((struct efi_device_path *)p) = END;
 
-	dp = efi_dp_append(file_info->dp_volume, (struct efi_device_path *)buf);
+	dp = efi_dp_append(dp_volume, (struct efi_device_path *)buf);
 	free(buf);
 
 	return dp;
@@ -492,7 +548,7 @@ static efi_status_t eficonfig_file_selected(void *data)
 	if (!info)
 		return EFI_INVALID_PARAMETER;
 
-	if (!strcmp(info->file_name, "..")) {
+	if (!strcmp(info->file_name, "..\\")) {
 		struct eficonfig_filepath_info *iter;
 		struct list_head *pos, *n;
 		int is_last;
@@ -634,18 +690,24 @@ static efi_status_t eficonfig_select_volume(struct eficonfig_select_file_info *f
 		info->v = v;
 		info->dp = device_path;
 		info->file_info = file_info;
-		ret = append_entry(efi_menu, devname, eficonfig_volume_selected, info);
+		ret = eficonfig_append_menu_entry(efi_menu, devname, eficonfig_volume_selected,
+						  info);
 		if (ret != EFI_SUCCESS) {
 			free(info);
 			goto out;
 		}
 	}
 
-	ret = append_quit_entry(efi_menu);
+	ret = eficonfig_append_quit_entry(efi_menu);
 	if (ret != EFI_SUCCESS)
 		goto out;
 
-	ret = eficonfig_process_common(efi_menu, "  ** Select Volume **");
+	ret = eficonfig_process_common(efi_menu, "  ** Select Volume **",
+				       eficonfig_menu_desc,
+				       eficonfig_display_statusline,
+				       eficonfig_print_entry,
+				       eficonfig_choice_entry);
+
 out:
 	efi_free_pool(volume_handles);
 	list_for_each_safe(pos, n, &efi_menu->list) {
@@ -699,14 +761,14 @@ eficonfig_create_file_entry(struct efimenu *efi_menu, u32 count,
 	u32 i, entry_num = 0;
 	struct eficonfig_file_entry_data *info;
 
-	efi_file_setpos_int(f, 0);
+	EFI_CALL(f->setpos(f, 0));
 	/* Read directory and construct menu structure */
 	for (i = 0; i < count; i++) {
 		if (entry_num >= EFICONFIG_ENTRY_NUM_MAX - 1)
 			break;
 
 		len = sizeof(struct efi_file_info) + EFICONFIG_FILE_PATH_BUF_SIZE;
-		ret = efi_file_read_int(f, &len, buf);
+		ret = EFI_CALL(f->read(f, &len, buf));
 		if (ret != EFI_SUCCESS || len == 0)
 			break;
 
@@ -745,8 +807,8 @@ eficonfig_create_file_entry(struct efimenu *efi_menu, u32 count,
 	      (int (*)(const void *, const void *))sort_file);
 
 	for (i = 0; i < entry_num; i++) {
-		ret = append_entry(efi_menu, tmp_infos[i]->file_name,
-				   eficonfig_file_selected, tmp_infos[i]);
+		ret = eficonfig_append_menu_entry(efi_menu, tmp_infos[i]->file_name,
+						  eficonfig_file_selected, tmp_infos[i]);
 		if (ret != EFI_SUCCESS)
 			goto out;
 	}
@@ -756,14 +818,14 @@ out:
 }
 
 /**
- * eficonfig_select_file() - construct the file selection menu
+ * eficonfig_show_file_selection() - construct the file selection menu
  *
  * @file_info:	pointer to the file selection structure
  * @root:	pointer to the file handle
  * Return:	status code
  */
-static efi_status_t eficonfig_select_file(struct eficonfig_select_file_info *file_info,
-					  struct efi_file_handle *root)
+static efi_status_t eficonfig_show_file_selection(struct eficonfig_select_file_info *file_info,
+						  struct efi_file_handle *root)
 {
 	u32 count = 0, i;
 	efi_uintn_t len;
@@ -785,7 +847,8 @@ static efi_status_t eficonfig_select_file(struct eficonfig_select_file_info *fil
 		}
 		INIT_LIST_HEAD(&efi_menu->list);
 
-		ret = efi_file_open_int(root, &f, file_info->current_path, EFI_FILE_MODE_READ, 0);
+		ret = EFI_CALL(root->open(root, &f, file_info->current_path,
+					  EFI_FILE_MODE_READ, 0));
 		if (ret != EFI_SUCCESS) {
 			eficonfig_print_msg("Reading volume failed!");
 			free(efi_menu);
@@ -796,7 +859,7 @@ static efi_status_t eficonfig_select_file(struct eficonfig_select_file_info *fil
 		/* Count the number of directory entries */
 		for (;;) {
 			len = sizeof(struct efi_file_info) + EFICONFIG_FILE_PATH_BUF_SIZE;
-			ret = efi_file_read_int(f, &len, buf);
+			ret = EFI_CALL(f->read(f, &len, buf));
 			if (ret != EFI_SUCCESS || len == 0)
 				break;
 
@@ -815,13 +878,17 @@ static efi_status_t eficonfig_select_file(struct eficonfig_select_file_info *fil
 		if (ret != EFI_SUCCESS)
 			goto err;
 
-		ret = append_quit_entry(efi_menu);
+		ret = eficonfig_append_quit_entry(efi_menu);
 		if (ret != EFI_SUCCESS)
 			goto err;
 
-		ret = eficonfig_process_common(efi_menu, "  ** Select File **");
+		ret = eficonfig_process_common(efi_menu, "  ** Select File **",
+					       eficonfig_menu_desc,
+					       eficonfig_display_statusline,
+					       eficonfig_print_entry,
+					       eficonfig_choice_entry);
 err:
-		efi_file_close_int(f);
+		EFI_CALL(f->close(f));
 		eficonfig_destroy(efi_menu);
 
 		if (tmp_infos) {
@@ -939,17 +1006,6 @@ static efi_status_t eficonfig_boot_edit_save(void *data)
 }
 
 /**
- * eficonfig_process_select_file() - callback function for "Select File" entry
- *
- * @data:	pointer to the data
- * Return:	status code
- */
-efi_status_t eficonfig_process_select_file(void *data)
-{
-	return EFI_SUCCESS;
-}
-
-/**
  * eficonfig_process_clear_file_selection() - callback function for "Clear" entry
  *
  * @data:	pointer to the data
@@ -973,25 +1029,29 @@ static struct eficonfig_item select_file_menu_items[] = {
 	{"Quit", eficonfig_process_quit},
 };
 
-
 /**
- * eficonfig_display_select_file_option() - display select file option
+ * eficonfig_process_show_file_option() - display select file option
  *
  * @file_info:	pointer to the file information structure
  * Return:	status code
  */
-efi_status_t eficonfig_display_select_file_option(struct eficonfig_select_file_info *file_info)
+efi_status_t eficonfig_process_show_file_option(void *data)
 {
 	efi_status_t ret;
 	struct efimenu *efi_menu;
 
-	select_file_menu_items[1].data = file_info;
+	select_file_menu_items[0].data = data;
+	select_file_menu_items[1].data = data;
 	efi_menu = eficonfig_create_fixed_menu(select_file_menu_items,
 					       ARRAY_SIZE(select_file_menu_items));
 	if (!efi_menu)
 		return EFI_OUT_OF_RESOURCES;
 
-	ret = eficonfig_process_common(efi_menu, "  ** Update File **");
+	ret = eficonfig_process_common(efi_menu, "  ** Update File **",
+				       eficonfig_menu_desc,
+				       eficonfig_display_statusline,
+				       eficonfig_print_entry,
+				       eficonfig_choice_entry);
 	if (ret != EFI_SUCCESS) /* User selects "Clear" or "Quit" */
 		ret = EFI_NOT_READY;
 
@@ -1001,12 +1061,12 @@ efi_status_t eficonfig_display_select_file_option(struct eficonfig_select_file_i
 }
 
 /**
- * eficonfig_select_file_handler() - handle user file selection
+ * eficonfig_process_select_file() - handle user file selection
  *
  * @data:	pointer to the data
  * Return:	status code
  */
-efi_status_t eficonfig_select_file_handler(void *data)
+efi_status_t eficonfig_process_select_file(void *data)
 {
 	size_t len;
 	efi_status_t ret;
@@ -1015,10 +1075,6 @@ efi_status_t eficonfig_select_file_handler(void *data)
 	struct eficonfig_filepath_info *item;
 	struct eficonfig_select_file_info *tmp = NULL;
 	struct eficonfig_select_file_info *file_info = data;
-
-	ret = eficonfig_display_select_file_option(file_info);
-	if (ret != EFI_SUCCESS)
-		return ret;
 
 	tmp = calloc(1, sizeof(struct eficonfig_select_file_info));
 	if (!tmp)
@@ -1042,11 +1098,11 @@ efi_status_t eficonfig_select_file_handler(void *data)
 		if (!tmp->current_volume)
 			return EFI_INVALID_PARAMETER;
 
-		ret = efi_open_volume_int(tmp->current_volume, &root);
+		ret = EFI_CALL(tmp->current_volume->open_volume(tmp->current_volume, &root));
 		if (ret != EFI_SUCCESS)
 			goto out;
 
-		ret = eficonfig_select_file(tmp, root);
+		ret = eficonfig_show_file_selection(tmp, root);
 		if (ret == EFI_ABORTED)
 			continue;
 		if (ret != EFI_SUCCESS)
@@ -1221,7 +1277,7 @@ static efi_status_t create_boot_option_entry(struct efimenu *efi_menu, char *tit
 		utf16_utf8_strcpy(&p, val);
 	}
 
-	return append_entry(efi_menu, buf, func, data);
+	return eficonfig_append_menu_entry(efi_menu, buf, func, data);
 }
 
 /**
@@ -1284,7 +1340,7 @@ static efi_status_t prepare_file_selection_entry(struct efimenu *efi_menu, char 
 	utf8_utf16_strcpy(&p, devname);
 	u16_strlcat(file_name, file_info->current_path, len);
 	ret = create_boot_option_entry(efi_menu, title, file_name,
-				       eficonfig_select_file_handler, file_info);
+				       eficonfig_process_show_file_option, file_info);
 out:
 	free(devname);
 	free(file_name);
@@ -1341,7 +1397,12 @@ static efi_status_t eficonfig_show_boot_option(struct eficonfig_boot_option *bo,
 	if (ret != EFI_SUCCESS)
 		goto out;
 
-	ret = eficonfig_process_common(efi_menu, header_str);
+	ret = eficonfig_process_common(efi_menu, header_str,
+				       eficonfig_menu_desc,
+				       eficonfig_display_statusline,
+				       eficonfig_print_entry,
+				       eficonfig_choice_entry);
+
 out:
 	eficonfig_destroy(efi_menu);
 
@@ -1491,7 +1552,8 @@ static efi_status_t eficonfig_edit_boot_option(u16 *varname, struct eficonfig_bo
 	}
 
 	if (bo->initrd_info.dp_volume) {
-		dp = create_selected_device_path(&bo->initrd_info);
+		dp = eficonfig_create_device_path(bo->initrd_info.dp_volume,
+						 bo->initrd_info.current_path);
 		if (!dp) {
 			ret = EFI_OUT_OF_RESOURCES;
 			goto out;
@@ -1500,7 +1562,7 @@ static efi_status_t eficonfig_edit_boot_option(u16 *varname, struct eficonfig_bo
 		efi_free_pool(dp);
 	}
 
-	dp = create_selected_device_path(&bo->file_info);
+	dp = eficonfig_create_device_path(bo->file_info.dp_volume, bo->file_info.current_path);
 	if (!dp) {
 		ret = EFI_OUT_OF_RESOURCES;
 		goto out;
@@ -1527,8 +1589,6 @@ static efi_status_t eficonfig_edit_boot_option(u16 *varname, struct eficonfig_bo
 	}
 
 	ret = eficonfig_set_boot_option(varname, final_dp, final_dp_size, bo->description, tmp);
-	if (ret != EFI_SUCCESS)
-		goto out;
 out:
 	free(tmp);
 	free(bo->optional_data);
@@ -1680,7 +1740,7 @@ static efi_status_t eficonfig_add_boot_selection_entry(struct efimenu *efi_menu,
 	utf16_utf8_strcpy(&p, lo.label);
 	info->boot_index = boot_index;
 	info->selected = selected;
-	ret = append_entry(efi_menu, buf, eficonfig_process_boot_selected, info);
+	ret = eficonfig_append_menu_entry(efi_menu, buf, eficonfig_process_boot_selected, info);
 	if (ret != EFI_SUCCESS) {
 		free(load_option);
 		free(info);
@@ -1702,7 +1762,8 @@ static efi_status_t eficonfig_show_boot_selection(unsigned int *selected)
 	u32 i;
 	u16 *bootorder;
 	efi_status_t ret;
-	efi_uintn_t num, size;
+	u16 *var_name16 = NULL;
+	efi_uintn_t num, size, buf_size;
 	struct efimenu *efi_menu;
 	struct list_head *pos, *n;
 	struct eficonfig_entry *entry;
@@ -1726,30 +1787,53 @@ static efi_status_t eficonfig_show_boot_selection(unsigned int *selected)
 	}
 
 	/* list the remaining load option not included in the BootOrder */
-	for (i = 0; i <= 0xFFFF; i++) {
-		/* If the index is included in the BootOrder, skip it */
-		if (search_bootorder(bootorder, num, i, NULL))
-			continue;
+	buf_size = 128;
+	var_name16 = malloc(buf_size);
+	if (!var_name16)
+		return EFI_OUT_OF_RESOURCES;
 
-		ret = eficonfig_add_boot_selection_entry(efi_menu, i, selected);
+	var_name16[0] = 0;
+	for (;;) {
+		int index;
+		efi_guid_t guid;
+
+		ret = efi_next_variable_name(&buf_size, &var_name16, &guid);
+		if (ret == EFI_NOT_FOUND)
+			break;
 		if (ret != EFI_SUCCESS)
 			goto out;
+
+		if (efi_varname_is_load_option(var_name16, &index)) {
+			/* If the index is included in the BootOrder, skip it */
+			if (search_bootorder(bootorder, num, index, NULL))
+				continue;
+
+			ret = eficonfig_add_boot_selection_entry(efi_menu, index, selected);
+			if (ret != EFI_SUCCESS)
+				goto out;
+		}
 
 		if (efi_menu->count >= EFICONFIG_ENTRY_NUM_MAX - 1)
 			break;
 	}
 
-	ret = append_quit_entry(efi_menu);
+	ret = eficonfig_append_quit_entry(efi_menu);
 	if (ret != EFI_SUCCESS)
 		goto out;
 
-	ret = eficonfig_process_common(efi_menu, "  ** Select Boot Option **");
+	ret = eficonfig_process_common(efi_menu, "  ** Select Boot Option **",
+				       eficonfig_menu_desc,
+				       eficonfig_display_statusline,
+				       eficonfig_print_entry,
+				       eficonfig_choice_entry);
 out:
 	list_for_each_safe(pos, n, &efi_menu->list) {
 		entry = list_entry(pos, struct eficonfig_entry, list);
 		free(entry->data);
 	}
 	eficonfig_destroy(efi_menu);
+
+	free(var_name16);
 
 	return ret;
 }
@@ -1806,137 +1890,202 @@ out:
 }
 
 /**
- * eficonfig_display_change_boot_order() - display the BootOrder list
+ * eficonfig_print_change_boot_order_entry() - print the boot option entry
  *
- * @efi_menu:	pointer to the efimenu structure
- * Return:	status code
+ * @data:	pointer to the data associated with each menu entry
  */
-static void eficonfig_display_change_boot_order(struct efimenu *efi_menu)
+static void eficonfig_print_change_boot_order_entry(void *data)
 {
-	bool reverse;
-	struct list_head *pos, *n;
-	struct eficonfig_boot_order *entry;
+	struct eficonfig_entry *entry = data;
+	bool reverse = (entry->efi_menu->active == entry->num);
 
-	printf(ANSI_CLEAR_CONSOLE ANSI_CURSOR_POSITION
-	       "\n  ** Change Boot Order **\n"
-	       ANSI_CURSOR_POSITION
-	       "  Press UP/DOWN to move, +/- to change order"
-	       ANSI_CURSOR_POSITION
-	       "  Press SPACE to activate or deactivate the entry"
-	       ANSI_CURSOR_POSITION
-	       "  Select [Save] to complete, ESC/CTRL+C to quit"
-	       ANSI_CURSOR_POSITION ANSI_CLEAR_LINE,
-	       1, 1, efi_menu->count + 5, 1, efi_menu->count + 6, 1,
-	       efi_menu->count + 7, 1,  efi_menu->count + 8, 1);
+	if (entry->efi_menu->start > entry->num || entry->efi_menu->end < entry->num)
+		return;
 
-	/* draw boot option list */
-	list_for_each_safe(pos, n, &efi_menu->list) {
-		entry = list_entry(pos, struct eficonfig_boot_order, list);
-		reverse = (entry->num == efi_menu->active);
+	printf(ANSI_CURSOR_POSITION ANSI_CLEAR_LINE,
+	       (entry->num - entry->efi_menu->start) + EFICONFIG_MENU_HEADER_ROW_NUM + 1, 7);
 
-		printf(ANSI_CURSOR_POSITION, entry->num + 4, 7);
+	if (reverse)
+		puts(ANSI_COLOR_REVERSE);
 
-		if (reverse)
-			puts(ANSI_COLOR_REVERSE);
-
-		if (entry->num < efi_menu->count - 2) {
-			if (entry->active)
-				printf("[*]  ");
-			else
-				printf("[ ]  ");
-		}
-
-		printf("%ls", entry->description);
-
-		if (reverse)
-			puts(ANSI_COLOR_RESET);
+	if (entry->num < entry->efi_menu->count - 2) {
+		if (((struct eficonfig_boot_order_data *)entry->data)->active)
+			printf("[*]  ");
+		else
+			printf("[ ]  ");
 	}
+
+	printf("%s", entry->title);
+
+	if (reverse)
+		puts(ANSI_COLOR_RESET);
 }
 
 /**
- * eficonfig_choice_change_boot_order() - handle the BootOrder update
+ * eficonfig_choice_change_boot_order() - user key input handler
  *
- * @efi_menu:	pointer to the efimenu structure
- * Return:	status code
+ * @data:	pointer to the menu entry
+ * Return:	key string to identify the selected entry
  */
-static efi_status_t eficonfig_choice_change_boot_order(struct efimenu *efi_menu)
+char *eficonfig_choice_change_boot_order(void *data)
 {
-	int esc = 0;
+	struct cli_ch_state s_cch, *cch = &s_cch;
 	struct list_head *pos, *n;
-	struct eficonfig_boot_order *tmp;
-	enum bootmenu_key key = KEY_NONE;
-	struct eficonfig_boot_order *entry;
+	struct efimenu *efi_menu = data;
+	enum bootmenu_key key = BKEY_NONE;
+	struct eficonfig_entry *entry, *tmp;
 
+	cli_ch_init(cch);
 	while (1) {
-		bootmenu_loop(NULL, &key, &esc);
+		key = bootmenu_loop(NULL, cch);
 
 		switch (key) {
-		case KEY_PLUS:
-			if (efi_menu->active > 0) {
+		case BKEY_PLUS:
+			if (efi_menu->active > 0 &&
+			    efi_menu->active < efi_menu->count - 2) {
 				list_for_each_safe(pos, n, &efi_menu->list) {
-					entry = list_entry(pos, struct eficonfig_boot_order, list);
+					entry = list_entry(pos, struct eficonfig_entry, list);
 					if (entry->num == efi_menu->active)
 						break;
 				}
-				tmp = list_entry(pos->prev, struct eficonfig_boot_order, list);
+				tmp = list_entry(pos->prev, struct eficonfig_entry, list);
 				entry->num--;
 				tmp->num++;
 				list_del(&tmp->list);
 				list_add(&tmp->list, &entry->list);
+
+				eficonfig_menu_up(efi_menu);
 			}
-			fallthrough;
-		case KEY_UP:
+			return NULL;
+		case BKEY_UP:
 			if (efi_menu->active > 0)
-				--efi_menu->active;
-			return EFI_NOT_READY;
-		case KEY_MINUS:
+				eficonfig_menu_up(efi_menu);
+
+			return NULL;
+		case BKEY_MINUS:
 			if (efi_menu->active < efi_menu->count - 3) {
 				list_for_each_safe(pos, n, &efi_menu->list) {
-					entry = list_entry(pos, struct eficonfig_boot_order, list);
+					entry = list_entry(pos, struct eficonfig_entry, list);
 					if (entry->num == efi_menu->active)
 						break;
 				}
-				tmp = list_entry(pos->next, struct eficonfig_boot_order, list);
+				tmp = list_entry(pos->next, struct eficonfig_entry, list);
 				entry->num++;
 				tmp->num--;
 				list_del(&entry->list);
 				list_add(&entry->list, &tmp->list);
 
-				++efi_menu->active;
+				eficonfig_menu_down(efi_menu);
 			}
-			return EFI_NOT_READY;
-		case KEY_DOWN:
+			return NULL;
+		case BKEY_DOWN:
 			if (efi_menu->active < efi_menu->count - 1)
-				++efi_menu->active;
-			return EFI_NOT_READY;
-		case KEY_SELECT:
+				eficonfig_menu_down(efi_menu);
+
+			return NULL;
+		case BKEY_SELECT:
 			/* "Save" */
-			if (efi_menu->active == efi_menu->count - 2)
-				return EFI_SUCCESS;
-
+			if (efi_menu->active == efi_menu->count - 2) {
+				list_for_each_prev_safe(pos, n, &efi_menu->list) {
+					entry = list_entry(pos, struct eficonfig_entry, list);
+					if (entry->num == efi_menu->active)
+						break;
+				}
+				return entry->key;
+			}
 			/* "Quit" */
-			if (efi_menu->active == efi_menu->count - 1)
-				return EFI_ABORTED;
-
+			if (efi_menu->active == efi_menu->count - 1) {
+				entry = list_last_entry(&efi_menu->list,
+							struct eficonfig_entry,
+							list);
+				return entry->key;
+			}
+			/* Pressed key is not valid, wait next key press */
 			break;
-		case KEY_SPACE:
+		case BKEY_SPACE:
 			if (efi_menu->active < efi_menu->count - 2) {
 				list_for_each_safe(pos, n, &efi_menu->list) {
-					entry = list_entry(pos, struct eficonfig_boot_order, list);
+					entry = list_entry(pos, struct eficonfig_entry, list);
 					if (entry->num == efi_menu->active) {
-						entry->active = entry->active ? false : true;
-						return EFI_NOT_READY;
+						struct eficonfig_boot_order_data *data = entry->data;
+
+						data->active = !data->active;
+						return NULL;
 					}
 				}
 			}
+			/* Pressed key is not valid, wait next key press */
 			break;
-		case KEY_QUIT:
-			return EFI_ABORTED;
+		case BKEY_QUIT:
+			entry = list_last_entry(&efi_menu->list,
+						struct eficonfig_entry, list);
+			return entry->key;
 		default:
-			/* Pressed key is not valid, no need to regenerate the menu */
+			/* Pressed key is not valid, wait next key press */
 			break;
 		}
 	}
+}
+
+/**
+ * eficonfig_process_save_boot_order() - callback function for "Save" entry
+ *
+ * @data:	pointer to the data
+ * Return:	status code
+ */
+static efi_status_t eficonfig_process_save_boot_order(void *data)
+{
+	u32 count = 0;
+	efi_status_t ret;
+	efi_uintn_t size;
+	struct list_head *pos, *n;
+	u16 *new_bootorder;
+	struct efimenu *efi_menu;
+	struct eficonfig_entry *entry;
+	struct eficonfig_save_boot_order_data *save_data = data;
+
+	efi_menu = save_data->efi_menu;
+
+	/*
+	 * The change boot order menu always has "Save" and "Quit" entries.
+	 * !(efi_menu->count - 2) means there is no user defined boot option.
+	 */
+	if (!(efi_menu->count - 2))
+		return EFI_SUCCESS;
+
+	new_bootorder = calloc(1, (efi_menu->count - 2) * sizeof(u16));
+	if (!new_bootorder) {
+		ret = EFI_OUT_OF_RESOURCES;
+		goto out;
+	}
+
+	/* create new BootOrder */
+	count = 0;
+	list_for_each_safe(pos, n, &efi_menu->list) {
+		struct eficonfig_boot_order_data *data;
+
+		entry = list_entry(pos, struct eficonfig_entry, list);
+		/* exit the loop when iteration reaches "Save" */
+		if (!strncmp(entry->title, "Save", strlen("Save")))
+			break;
+
+		data = entry->data;
+		if (data->active)
+			new_bootorder[count++] = data->boot_index;
+	}
+
+	size = count * sizeof(u16);
+	ret = efi_set_variable_int(u"BootOrder", &efi_global_variable_guid,
+				   EFI_VARIABLE_NON_VOLATILE |
+				   EFI_VARIABLE_BOOTSERVICE_ACCESS |
+				   EFI_VARIABLE_RUNTIME_ACCESS,
+				   size, new_bootorder, false);
+
+	save_data->selected = true;
+out:
+	free(new_bootorder);
+
+	return ret;
 }
 
 /**
@@ -1950,12 +2099,13 @@ static efi_status_t eficonfig_choice_change_boot_order(struct efimenu *efi_menu)
 static efi_status_t eficonfig_add_change_boot_order_entry(struct efimenu *efi_menu,
 							  u32 boot_index, bool active)
 {
+	char *title, *p;
 	efi_status_t ret;
 	efi_uintn_t size;
 	void *load_option;
 	struct efi_load_option lo;
 	u16 varname[] = u"Boot####";
-	struct eficonfig_boot_order *entry;
+	struct eficonfig_boot_order_data *data;
 
 	efi_create_indexed_name(varname, sizeof(varname), "Boot", boot_index);
 	load_option = efi_get_var(varname, &efi_global_variable_guid, &size);
@@ -1963,31 +2113,38 @@ static efi_status_t eficonfig_add_change_boot_order_entry(struct efimenu *efi_me
 		return EFI_SUCCESS;
 
 	ret = efi_deserialize_load_option(&lo, load_option, &size);
+	if (ret != EFI_SUCCESS)
+		goto out;
+
+	data = calloc(1, sizeof(*data));
+	if (!data) {
+		ret = EFI_OUT_OF_RESOURCES;
+		goto out;
+	}
+
+	title = calloc(1, utf16_utf8_strlen(lo.label) + 1);
+	if (!title) {
+		free(data);
+		ret = EFI_OUT_OF_RESOURCES;
+		goto out;
+	}
+	p = title;
+	utf16_utf8_strcpy(&p, lo.label);
+
+	data->boot_index = boot_index;
+	data->active = active;
+
+	ret = eficonfig_append_menu_entry(efi_menu, title, NULL, data);
 	if (ret != EFI_SUCCESS) {
-		free(load_option);
-		return ret;
+		free(data);
+		free(title);
+		goto out;
 	}
 
-	entry = calloc(1, sizeof(struct eficonfig_boot_order));
-	if (!entry) {
-		free(load_option);
-		return EFI_OUT_OF_RESOURCES;
-	}
-
-	entry->description = u16_strdup(lo.label);
-	if (!entry->description) {
-		free(load_option);
-		free(entry);
-		return EFI_OUT_OF_RESOURCES;
-	}
-	entry->num = efi_menu->count++;
-	entry->boot_index = boot_index;
-	entry->active = active;
-	list_add_tail(&entry->list, &efi_menu->list);
-
+out:
 	free(load_option);
 
-	return EFI_SUCCESS;
+	return ret;
 }
 
 /**
@@ -2002,8 +2159,11 @@ static efi_status_t eficonfig_create_change_boot_order_entry(struct efimenu *efi
 							     u16 *bootorder, efi_uintn_t num)
 {
 	u32 i;
+	char *title;
 	efi_status_t ret;
-	struct eficonfig_boot_order *entry;
+	u16 *var_name16 = NULL;
+	efi_uintn_t size, buf_size;
+	struct eficonfig_save_boot_order_data *save_data;
 
 	/* list the load option in the order of BootOrder variable */
 	for (i = 0; i < num; i++) {
@@ -2016,41 +2176,67 @@ static efi_status_t eficonfig_create_change_boot_order_entry(struct efimenu *efi
 	}
 
 	/* list the remaining load option not included in the BootOrder */
-	for (i = 0; i < 0xFFFF; i++) {
+	buf_size = 128;
+	var_name16 = malloc(buf_size);
+	if (!var_name16)
+		return EFI_OUT_OF_RESOURCES;
+
+	var_name16[0] = 0;
+	for (;;) {
+		int index;
+		efi_guid_t guid;
+
 		if (efi_menu->count >= EFICONFIG_ENTRY_NUM_MAX - 2)
 			break;
 
-		/* If the index is included in the BootOrder, skip it */
-		if (search_bootorder(bootorder, num, i, NULL))
-			continue;
-
-		ret = eficonfig_add_change_boot_order_entry(efi_menu, i, false);
+		size = buf_size;
+		ret = efi_next_variable_name(&buf_size, &var_name16, &guid);
+		if (ret == EFI_NOT_FOUND)
+			break;
 		if (ret != EFI_SUCCESS)
 			goto out;
+
+		if (efi_varname_is_load_option(var_name16, &index)) {
+			/* If the index is included in the BootOrder, skip it */
+			if (search_bootorder(bootorder, num, index, NULL))
+				continue;
+
+			ret = eficonfig_add_change_boot_order_entry(efi_menu, index, false);
+			if (ret != EFI_SUCCESS)
+				goto out;
+		}
 	}
 
 	/* add "Save" and "Quit" entries */
-	entry = calloc(1, sizeof(struct eficonfig_boot_order));
-	if (!entry)
+	title = strdup("Save");
+	if (!title) {
+		ret = EFI_OUT_OF_RESOURCES;
+		goto out;
+	}
+
+	save_data = malloc(sizeof(struct eficonfig_save_boot_order_data));
+	if (!save_data) {
+		ret = EFI_OUT_OF_RESOURCES;
+		goto out;
+	}
+	save_data->efi_menu = efi_menu;
+	save_data->selected = false;
+
+	ret = eficonfig_append_menu_entry(efi_menu, title,
+					  eficonfig_process_save_boot_order,
+					  save_data);
+	if (ret != EFI_SUCCESS)
 		goto out;
 
-	entry->num = efi_menu->count++;
-	entry->description = u16_strdup(u"Save");
-	list_add_tail(&entry->list, &efi_menu->list);
-
-	entry = calloc(1, sizeof(struct eficonfig_boot_order));
-	if (!entry)
+	ret = eficonfig_append_quit_entry(efi_menu);
+	if (ret != EFI_SUCCESS)
 		goto out;
-
-	entry->num = efi_menu->count++;
-	entry->description = u16_strdup(u"Quit");
-	list_add_tail(&entry->list, &efi_menu->list);
 
 	efi_menu->active = 0;
-
-	return EFI_SUCCESS;
 out:
-	return EFI_OUT_OF_RESOURCES;
+	free(var_name16);
+
+	return ret;
 }
 
 /**
@@ -2061,12 +2247,11 @@ out:
  */
 static efi_status_t eficonfig_process_change_boot_order(void *data)
 {
-	u32 count;
 	u16 *bootorder;
 	efi_status_t ret;
 	efi_uintn_t num, size;
 	struct list_head *pos, *n;
-	struct eficonfig_boot_order *entry;
+	struct eficonfig_entry *entry;
 	struct efimenu *efi_menu;
 
 	efi_menu = calloc(1, sizeof(struct efimenu));
@@ -2082,51 +2267,32 @@ static efi_status_t eficonfig_process_change_boot_order(void *data)
 		goto out;
 
 	while (1) {
-		eficonfig_display_change_boot_order(efi_menu);
-
-		ret = eficonfig_choice_change_boot_order(efi_menu);
-		if (ret == EFI_SUCCESS) {
-			u16 *new_bootorder;
-
-			new_bootorder = calloc(1, (efi_menu->count - 2) * sizeof(u16));
-			if (!new_bootorder) {
-				ret = EFI_OUT_OF_RESOURCES;
-				goto out;
+		ret = eficonfig_process_common(efi_menu,
+					       "  ** Change Boot Order **",
+					       eficonfig_change_boot_order_desc,
+					       eficonfig_display_statusline,
+					       eficonfig_print_change_boot_order_entry,
+					       eficonfig_choice_change_boot_order);
+		/* exit from the menu if user selects the "Save" entry. */
+		if (ret == EFI_SUCCESS && efi_menu->active == (efi_menu->count - 2)) {
+			list_for_each_prev_safe(pos, n, &efi_menu->list) {
+				entry = list_entry(pos, struct eficonfig_entry, list);
+				if (entry->num == efi_menu->active)
+					break;
 			}
-
-			/* create new BootOrder  */
-			count = 0;
-			list_for_each_safe(pos, n, &efi_menu->list) {
-				entry = list_entry(pos, struct eficonfig_boot_order, list);
-				if (entry->active)
-					new_bootorder[count++] = entry->boot_index;
-			}
-
-			size = count * sizeof(u16);
-			ret = efi_set_variable_int(u"BootOrder", &efi_global_variable_guid,
-						   EFI_VARIABLE_NON_VOLATILE |
-						   EFI_VARIABLE_BOOTSERVICE_ACCESS |
-						   EFI_VARIABLE_RUNTIME_ACCESS,
-						   size, new_bootorder, false);
-
-			free(new_bootorder);
-			goto out;
-		} else if (ret == EFI_NOT_READY) {
-			continue;
-		} else {
-			goto out;
+			if (((struct eficonfig_save_boot_order_data *)entry->data)->selected)
+				break;
 		}
+		if (ret != EFI_SUCCESS)
+			break;
 	}
 out:
-	list_for_each_safe(pos, n, &efi_menu->list) {
-		entry = list_entry(pos, struct eficonfig_boot_order, list);
-		list_del(&entry->list);
-		free(entry->description);
-		free(entry);
-	}
-
 	free(bootorder);
-	free(efi_menu);
+	list_for_each_safe(pos, n, &efi_menu->list) {
+		entry = list_entry(pos, struct eficonfig_entry, list);
+		free(entry->data);
+	}
+	eficonfig_destroy(efi_menu);
 
 	/* to stay the parent menu */
 	ret = (ret == EFI_ABORTED) ? EFI_NOT_READY : ret;
@@ -2278,17 +2444,43 @@ out:
 efi_status_t eficonfig_delete_invalid_boot_option(struct eficonfig_media_boot_option *opt,
 						  efi_status_t count)
 {
-	u32 i, j;
 	efi_uintn_t size;
-	efi_status_t ret;
 	void *load_option;
+	u32 i, list_size = 0;
 	struct efi_load_option lo;
+	u16 *var_name16 = NULL;
 	u16 varname[] = u"Boot####";
+	efi_status_t ret = EFI_SUCCESS;
+	u16 *delete_index_list = NULL, *p;
+	efi_uintn_t buf_size;
 
-	for (i = 0; i <= 0xFFFF; i++) {
+	buf_size = 128;
+	var_name16 = malloc(buf_size);
+	if (!var_name16)
+		return EFI_OUT_OF_RESOURCES;
+
+	var_name16[0] = 0;
+	for (;;) {
+		int index;
+		efi_guid_t guid;
 		efi_uintn_t tmp;
 
-		efi_create_indexed_name(varname, sizeof(varname), "Boot", i);
+		ret = efi_next_variable_name(&buf_size, &var_name16, &guid);
+		if (ret == EFI_NOT_FOUND) {
+			/*
+			 * EFI_NOT_FOUND indicates we retrieved all EFI variables.
+			 * This should be treated as success.
+			 */
+			ret = EFI_SUCCESS;
+			break;
+		}
+		if (ret != EFI_SUCCESS)
+			goto out;
+
+		if (!efi_varname_is_load_option(var_name16, &index))
+			continue;
+
+		efi_create_indexed_name(varname, sizeof(varname), "Boot", index);
 		load_option = efi_get_var(varname, &efi_global_variable_guid, &size);
 		if (!load_option)
 			continue;
@@ -2298,30 +2490,47 @@ efi_status_t eficonfig_delete_invalid_boot_option(struct eficonfig_media_boot_op
 		if (ret != EFI_SUCCESS)
 			goto next;
 
-		if (size >= sizeof(efi_guid_bootmenu_auto_generated)) {
-			if (guidcmp(lo.optional_data, &efi_guid_bootmenu_auto_generated) == 0) {
-				for (j = 0; j < count; j++) {
-					if (opt[j].size == tmp &&
-					    memcmp(opt[j].lo, load_option, tmp) == 0) {
-						opt[j].exist = true;
-						break;
-					}
+		if (size >= sizeof(efi_guid_bootmenu_auto_generated) &&
+		    !guidcmp(lo.optional_data, &efi_guid_bootmenu_auto_generated)) {
+			for (i = 0; i < count; i++) {
+				if (opt[i].size == tmp &&
+				    memcmp(opt[i].lo, load_option, tmp) == 0) {
+					opt[i].exist = true;
+					break;
 				}
+			}
 
-				if (j == count) {
-					ret = delete_boot_option(i);
-					if (ret != EFI_SUCCESS) {
-						free(load_option);
-						goto out;
-					}
+			/*
+			 * The entire list of variables must be retrieved by
+			 * efi_get_next_variable_name_int() before deleting the invalid
+			 * boot option, just save the index here.
+			 */
+			if (i == count) {
+				p = realloc(delete_index_list, sizeof(u32) *
+					    (list_size + 1));
+				if (!p) {
+					ret = EFI_OUT_OF_RESOURCES;
+					goto out;
 				}
+				delete_index_list = p;
+				delete_index_list[list_size++] = index;
 			}
 		}
 next:
 		free(load_option);
 	}
 
+	/* delete all invalid boot options */
+	for (i = 0; i < list_size; i++) {
+		ret = delete_boot_option(delete_index_list[i]);
+		if (ret != EFI_SUCCESS)
+			goto out;
+	}
+
 out:
+	free(var_name16);
+	free(delete_index_list);
+
 	return ret;
 }
 
@@ -2421,6 +2630,7 @@ static efi_status_t eficonfig_init(void)
 	efi_status_t ret = EFI_SUCCESS;
 	static bool init;
 	struct efi_handler *handler;
+	unsigned long columns, rows;
 
 	if (!init) {
 		ret = efi_search_protocol(efi_root, &efi_guid_text_input_protocol, &handler);
@@ -2431,6 +2641,23 @@ static efi_status_t eficonfig_init(void)
 					EFI_OPEN_PROTOCOL_GET_PROTOCOL);
 		if (ret != EFI_SUCCESS)
 			return ret;
+		ret = efi_search_protocol(efi_root, &efi_guid_text_output_protocol, &handler);
+		if (ret != EFI_SUCCESS)
+			return ret;
+
+		ret = efi_protocol_open(handler, (void **)&cout, efi_root, NULL,
+					EFI_OPEN_PROTOCOL_GET_PROTOCOL);
+		if (ret != EFI_SUCCESS)
+			return ret;
+
+		cout->query_mode(cout, cout->mode->mode, &columns, &rows);
+		avail_row = rows - (EFICONFIG_MENU_HEADER_ROW_NUM +
+				    EFICONFIG_MENU_DESC_ROW_NUM);
+		if (avail_row <= 0) {
+			eficonfig_print_msg("Console size is too small!");
+			return EFI_INVALID_PARAMETER;
+		}
+		/* TODO: Should we check the minimum column size? */
 	}
 
 	init = true;
@@ -2443,6 +2670,9 @@ static const struct eficonfig_item maintenance_menu_items[] = {
 	{"Edit Boot Option", eficonfig_process_edit_boot_option},
 	{"Change Boot Order", eficonfig_process_change_boot_order},
 	{"Delete Boot Option", eficonfig_process_delete_boot_option},
+#if (CONFIG_IS_ENABLED(EFI_SECURE_BOOT) && CONFIG_IS_ENABLED(EFI_MM_COMM_TEE))
+	{"Secure Boot Configuration", eficonfig_process_secure_boot_config},
+#endif
 	{"Quit", eficonfig_process_quit},
 };
 
@@ -2485,7 +2715,12 @@ static int do_eficonfig(struct cmd_tbl *cmdtp, int flag, int argc, char *const a
 		if (!efi_menu)
 			return CMD_RET_FAILURE;
 
-		ret = eficonfig_process_common(efi_menu, "  ** UEFI Maintenance Menu **");
+		ret = eficonfig_process_common(efi_menu,
+					       "  ** UEFI Maintenance Menu **",
+					       eficonfig_menu_desc,
+					       eficonfig_display_statusline,
+					       eficonfig_print_entry,
+					       eficonfig_choice_entry);
 		eficonfig_destroy(efi_menu);
 
 		if (ret == EFI_ABORTED)

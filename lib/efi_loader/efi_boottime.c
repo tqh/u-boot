@@ -1949,6 +1949,7 @@ efi_status_t efi_load_image_from_path(bool boot_policy,
 	efi_uintn_t buffer_size;
 	uint64_t addr, pages;
 	const efi_guid_t *guid;
+	struct efi_handler *handler;
 
 	/* In case of failure nothing is returned */
 	*buffer = NULL;
@@ -1970,11 +1971,11 @@ efi_status_t efi_load_image_from_path(bool boot_policy,
 	}
 	if (ret != EFI_SUCCESS)
 		return EFI_NOT_FOUND;
-	ret = EFI_CALL(efi_handle_protocol(device, guid,
-					   (void **)&load_file_protocol));
+	ret = efi_search_protocol(device, guid, &handler);
 	if (ret != EFI_SUCCESS)
 		return EFI_NOT_FOUND;
 	buffer_size = 0;
+	load_file_protocol = handler->protocol_interface;
 	ret = EFI_CALL(load_file_protocol->load_file(
 					load_file_protocol, rem, boot_policy,
 					&buffer_size, NULL));
@@ -2754,7 +2755,7 @@ efi_uninstall_multiple_protocol_interfaces_int(efi_handle_t handle,
 {
 	const efi_guid_t *protocol;
 	void *protocol_interface;
-	efi_status_t ret;
+	efi_status_t ret = EFI_SUCCESS;
 	size_t i = 0;
 	efi_va_list argptr_copy;
 
@@ -3956,8 +3957,11 @@ efi_status_t efi_initialize_system_table(void)
 	 * These entries will be set to NULL in ExitBootServices(). To avoid
 	 * relocation in SetVirtualAddressMap(), set them dynamically.
 	 */
+	systab.con_in_handle = efi_root;
 	systab.con_in = &efi_con_in;
+	systab.con_out_handle = efi_root;
 	systab.con_out = &efi_con_out;
+	systab.stderr_handle = efi_root;
 	systab.std_err = &efi_con_out;
 	systab.boottime = &efi_boot_services;
 

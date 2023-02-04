@@ -346,7 +346,7 @@ static int initr_flash(void)
 	 * NOTE: Maybe we should add some schedule()? XXX
 	 */
 	if (env_get_yesno("flashchecksum") == 1) {
-		const uchar *flash_base = (const uchar *)CONFIG_SYS_FLASH_BASE;
+		const uchar *flash_base = (const uchar *)CFG_SYS_FLASH_BASE;
 
 		printf("  CRC: %08X", crc32(0,
 					    flash_base,
@@ -356,8 +356,8 @@ static int initr_flash(void)
 	putc('\n');
 
 	/* update start of FLASH memory    */
-#ifdef CONFIG_SYS_FLASH_BASE
-	bd->bi_flashstart = CONFIG_SYS_FLASH_BASE;
+#ifdef CFG_SYS_FLASH_BASE
+	bd->bi_flashstart = CFG_SYS_FLASH_BASE;
 #endif
 	/* size of FLASH memory (final value) */
 	bd->bi_flashsize = flash_size;
@@ -370,7 +370,7 @@ static int initr_flash(void)
 #if defined(CONFIG_OXC) || defined(CONFIG_RMU)
 	/* flash mapped at end of memory map */
 	bd->bi_flashoffset = CONFIG_TEXT_BASE + flash_size;
-#elif CONFIG_SYS_MONITOR_BASE == CONFIG_SYS_FLASH_BASE
+#elif CONFIG_SYS_MONITOR_BASE == CFG_SYS_FLASH_BASE
 	bd->bi_flashoffset = monitor_flash_len;	/* reserved area for monitor */
 #endif
 	return 0;
@@ -533,7 +533,7 @@ static int initr_ide(void)
 }
 #endif
 
-#if defined(CONFIG_PRAM)
+#if defined(CFG_PRAM)
 /*
  * Export available size of memory for Linux, taking into account the
  * protected RAM at top of memory
@@ -543,7 +543,7 @@ int initr_mem(void)
 	ulong pram = 0;
 	char memsz[32];
 
-	pram = env_get_ulong("pram", 10, CONFIG_PRAM);
+	pram = env_get_ulong("pram", 10, CFG_PRAM);
 	sprintf(memsz, "%ldk", (long int)((gd->ram_size / 1024) - pram));
 	env_set("mem", memsz);
 
@@ -694,7 +694,7 @@ static init_fnc_t init_sequence_r[] = {
 	/* initialize higher level parts of CPU like time base and timers */
 	cpu_init_r,
 #endif
-#ifdef CONFIG_EFI_SETUP_EARLY
+#ifdef CONFIG_EFI_LOADER
 	efi_init_early,
 #endif
 #ifdef CONFIG_CMD_NAND
@@ -756,9 +756,6 @@ static init_fnc_t init_sequence_r[] = {
 	initr_status_led,
 #endif
 	/* PPC has a udelay(20) here dating from 2002. Why? */
-#if defined(CONFIG_GPIO_HOG)
-	gpio_hog_probe_all,
-#endif
 #ifdef CONFIG_BOARD_LATE_INIT
 	board_late_init,
 #endif
@@ -791,7 +788,7 @@ static init_fnc_t init_sequence_r[] = {
 	 */
 	last_stage_init,
 #endif
-#if defined(CONFIG_PRAM)
+#if defined(CFG_PRAM)
 	initr_mem,
 #endif
 	run_main_loop,

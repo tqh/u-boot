@@ -26,6 +26,11 @@ import os
 import re
 import sys
 
+try:
+    from setuptools import sic
+except ImportError:
+    pass
+
 srcdir = os.path.dirname(__file__)
 
 with open(os.path.join(srcdir, "../README"), "r") as fh:
@@ -113,7 +118,10 @@ progname = sys.argv[0]
 files = os.environ.get('SOURCES', '').split()
 cflags = os.environ.get('CPPFLAGS', '').split()
 objdir = os.environ.get('OBJDIR')
-version = os.environ.get('VERSION')
+try:
+    version = sic(os.environ.get('VERSION'))
+except:
+    version = os.environ.get('VERSION')
 swig_opts = os.environ.get('SWIG_OPTS', '').split()
 
 # If we were called directly rather than through our Makefile (which is often

@@ -23,6 +23,9 @@ Shell commands
    cmd/addrmap
    cmd/askenv
    cmd/base
+   cmd/bdinfo
+   cmd/blkcache
+   cmd/bootd
    cmd/bootdev
    cmd/bootefi
    cmd/bootflow
@@ -34,6 +37,7 @@ Shell commands
    cmd/cat
    cmd/cbsysinfo
    cmd/cls
+   cmd/cmp
    cmd/conitrace
    cmd/cyclic
    cmd/dm
@@ -52,12 +56,15 @@ Shell commands
    cmd/for
    cmd/fwu_mdata
    cmd/gpio
+   cmd/host
    cmd/load
    cmd/loadm
    cmd/loady
    cmd/mbr
    cmd/md
    cmd/mmc
+   cmd/mtest
+   cmd/part
    cmd/pause
    cmd/pinmux
    cmd/printenv
@@ -70,11 +77,17 @@ Shell commands
    cmd/scp03
    cmd/setexpr
    cmd/size
+   cmd/sleep
+   cmd/sound
+   cmd/source
+   cmd/sm
    cmd/temperature
    cmd/tftpput
    cmd/true
    cmd/ums
+   cmd/ut
    cmd/wdt
+   cmd/wget
    cmd/xxd
 
 Booting OS

@@ -57,11 +57,12 @@ endif
 
 obj-$(CONFIG_$(SPL_TPL_)TPM) += tpm-common.o
 ifeq ($(CONFIG_$(SPL_TPL_)TPM),y)
-obj-y += crc8.o
 obj-$(CONFIG_TPM) += tpm_api.o
 obj-$(CONFIG_TPM_V1) += tpm-v1.o
 obj-$(CONFIG_TPM_V2) += tpm-v2.o
 endif
+
+obj-$(CONFIG_$(SPL_TPL_)CRC8) += crc8.o
 
 obj-y += crypto/
 
@@ -145,6 +146,8 @@ obj-y += abuf.o
 obj-y += date.o
 obj-y += rtc-lib.o
 obj-$(CONFIG_LIB_ELF) += elf.o
+
+obj-$(CONFIG_$(SPL_TPL_)SEMIHOSTING) += semihosting.o
 
 #
 # Build a fast OID lookup registry from include/linux/oid_registry.h

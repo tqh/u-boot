@@ -43,12 +43,8 @@
 DECLARE_GLOBAL_DATA_PTR;
 DECLARE_BINMAN_MAGIC_SYM;
 
-#ifndef CONFIG_SYS_UBOOT_START
-#define CONFIG_SYS_UBOOT_START	CONFIG_TEXT_BASE
-#endif
-#ifndef CONFIG_SYS_MONITOR_LEN
-/* Unknown U-Boot size, let's assume it will not be more than 200 KB */
-#define CONFIG_SYS_MONITOR_LEN	(200 * 1024)
+#ifndef CFG_SYS_UBOOT_START
+#define CFG_SYS_UBOOT_START	CONFIG_TEXT_BASE
 #endif
 
 u32 *boot_params_ptr = NULL;
@@ -232,11 +228,17 @@ __weak struct legacy_img_hdr *spl_get_load_buffer(ssize_t offset, size_t size)
 	return map_sysmem(CONFIG_TEXT_BASE + offset, 0);
 }
 
+#ifdef CONFIG_SPL_RAW_IMAGE_SUPPORT
 void spl_set_header_raw_uboot(struct spl_image_info *spl_image)
 {
 	ulong u_boot_pos = spl_get_image_pos();
 
+#if CONFIG_SYS_MONITOR_LEN != 0
 	spl_image->size = CONFIG_SYS_MONITOR_LEN;
+#else
+	/* Unknown U-Boot size, let's assume it will not be more than 200 KB */
+	spl_image->size = 200 * 1024;
+#endif
 
 	/*
 	 * Binman error cases: address of the end of the previous region or the
@@ -248,12 +250,13 @@ void spl_set_header_raw_uboot(struct spl_image_info *spl_image)
 		spl_image->entry_point = u_boot_pos;
 		spl_image->load_addr = u_boot_pos;
 	} else {
-		spl_image->entry_point = CONFIG_SYS_UBOOT_START;
+		spl_image->entry_point = CFG_SYS_UBOOT_START;
 		spl_image->load_addr = CONFIG_TEXT_BASE;
 	}
 	spl_image->os = IH_OS_U_BOOT;
 	spl_image->name = "U-Boot";
 }
+#endif
 
 #if CONFIG_IS_ENABLED(LOAD_FIT_FULL)
 /* Parse and load full fitImage in SPL */
@@ -524,8 +527,8 @@ static int spl_common_init(bool setup_malloc)
 
 #if CONFIG_VAL(SYS_MALLOC_F_LEN)
 	if (setup_malloc) {
-#ifdef CONFIG_MALLOC_F_ADDR
-		gd->malloc_base = CONFIG_MALLOC_F_ADDR;
+#ifdef CFG_MALLOC_F_ADDR
+		gd->malloc_base = CFG_MALLOC_F_ADDR;
 #endif
 		gd->malloc_limit = CONFIG_VAL(SYS_MALLOC_F_LEN);
 		gd->malloc_ptr = 0;
@@ -782,9 +785,6 @@ void board_init_r(gd_t *dummy1, ulong dummy2)
 			hang();
 		}
 	}
-
-	if (CONFIG_IS_ENABLED(GPIO_HOG))
-		gpio_hog_probe_all();
 
 #if CONFIG_IS_ENABLED(BOARD_INIT)
 	spl_board_init();

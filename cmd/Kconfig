@@ -526,6 +526,10 @@ config CMD_THOR_DOWNLOAD
 	  There is no documentation about this within the U-Boot source code
 	  but you should be able to find something on the interwebs.
 
+config THOR_RESET_OFF
+	bool "thor: Disable reset on completion"
+	depends on CMD_THOR_DOWNLOAD
+
 config CMD_ZBOOT
 	bool "zboot - x86 boot command"
 	help
@@ -1200,10 +1204,30 @@ config CMD_LOADM
 	  Load a binary over memory mapped.
 
 config CMD_LOADS
-	bool "loads"
+	bool "loads - Load a file over serial in S-Record format"
 	default y
 	help
 	  Load an S-Record file over serial line
+
+config LOADS_ECHO
+	bool "Echo all characters received during a loads back to console"
+	depends on CMD_LOADS
+	help
+	  If enabled, all characters received during a serial download (using
+	  the "loads" command) are echoed back. This might be needed by some
+	  terminal emulations (like "cu"), but may as well just take time on
+	  others. This sets the initial value of the "loads_echo" environment
+	  variable to 1.
+
+config CMD_SAVES
+	bool "saves - Save a file over serial in S-Record format"
+	help
+	  Provides a way to save a binary file using the Motorola S-Record
+	  format over the serial line.
+
+config SYS_LOADS_BAUD_CHANGE
+	bool "Enable a temporary baudrate change during loads/saves command"
+	depends on CMD_LOADS || CMD_SAVES
 
 config CMD_LOADXY_TIMEOUT
 	int "loadxy_timeout"
@@ -1403,12 +1427,6 @@ config CMD_SATA
 	  SATA replaces PATA (originally just ATA), which stands for Parallel AT
 	  Attachment, where AT refers to an IBM AT (Advanced Technology)
 	  computer released in 1984.
-
-config CMD_SAVES
-	bool "saves - Save a file over serial in S-Record format"
-	help
-	  Provides a way to save a binary file using the Motorola S-Record
-	  format over the serial line.
 
 config CMD_SCSI
 	bool "scsi - Access to SCSI devices"
@@ -1798,6 +1816,13 @@ config SYS_DISABLE_AUTOLOAD
 	  is complete.  Enable this option to disable this behavior and instead
 	  require files to be loaded over the network by subsequent commands.
 
+config CMD_WGET
+	bool "wget"
+	select PROT_TCP
+	help
+	  wget is a simple command to download kernel, or other files,
+	  from a http server over TCP.
+
 config CMD_MII
 	bool "mii"
 	imply CMD_MDIO
@@ -1825,6 +1850,13 @@ config CMD_PING
 	bool "ping"
 	help
 	  Send ICMP ECHO_REQUEST to network host
+
+config CMD_PING6
+	bool "ping6"
+	depends on IPV6
+	default y if (CMD_PING && IPV6)
+	help
+	  Send ICMPv6 ECHO_REQUEST to network host
 
 config CMD_CDP
 	bool "cdp"
@@ -1945,7 +1977,7 @@ config CMD_CONITRACE
 
 config CMD_CLS
 	bool "Enable clear screen command 'cls'"
-	default y if LCD || DM_VIDEO
+	default y if LCD || VIDEO
 	help
 	  Enable the 'cls' command which clears the screen contents
 	  on video frame buffer.
@@ -2507,6 +2539,7 @@ config CMD_MTDPARTS_SHOW_NET_SIZES
 config MTDIDS_DEFAULT
 	string "Default MTD IDs"
 	depends on MTD || SPI_FLASH
+	depends on !SYS_MTDPARTS_RUNTIME
 	help
 	  Defines a default MTD IDs list for use with MTD partitions in the
 	  Linux MTD command line partitions format.
@@ -2514,6 +2547,7 @@ config MTDIDS_DEFAULT
 config MTDPARTS_DEFAULT
 	string "Default MTD partition scheme"
 	depends on MTD || SPI_FLASH
+	depends on !SYS_MTDPARTS_RUNTIME
 	help
 	  Defines a default MTD partitioning scheme in the Linux MTD command
 	  line partitions format
@@ -2588,6 +2622,7 @@ config CMD_DIAG
 
 config CMD_EVENT
 	bool "event - Show information about events"
+	depends on EVENT
 	default y if EVENT_DEBUG
 	help
 	  This enables the 'event' command which provides information about
@@ -2698,4 +2733,11 @@ config MMC_SPEED_MODE_SET
 	  and is indicated using the index from enum bus_mode in
 	  include/mmc.h. A speed mode can be set only if it has already
 	  been enabled in the device tree.
+
+config CMD_MESON
+	bool "Amlogic Meson commands"
+	depends on ARCH_MESON
+	default y
+	help
+	  Enable useful commands for the Meson Soc family developed by Amlogic Inc.
 endmenu

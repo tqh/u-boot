@@ -189,6 +189,16 @@ int sandbox_get_setup_called(struct udevice *dev);
 int sandbox_get_sound_active(struct udevice *dev);
 
 /**
+ * sandbox_get_sound_count() - Read back the count of the sound data so far
+ *
+ * This data is provided to the sandbox driver by the sound play() method.
+ *
+ * @dev: Device to check
+ * Return: count of audio data
+ */
+int sandbox_get_sound_count(struct udevice *dev);
+
+/**
  * sandbox_get_sound_sum() - Read back the sum of the sound data so far
  *
  * This data is provided to the sandbox driver by the sound play() method.
@@ -333,5 +343,35 @@ void sandbox_set_fake_efi_mgr_dev(struct udevice *dev, bool fake_dev);
  * @return 0 if OK, -ve on error
  */
 int sandbox_load_other_fdt(void **fdtp, int *sizep);
+
+/**
+ * sandbox_set_eth_enable() - Enable / disable Ethernet
+ *
+ * Allows control of whether Ethernet packets are actually send/received
+ *
+ * @enable: true to enable Ethernet, false to disable
+ */
+void sandbox_set_eth_enable(bool enable);
+
+/**
+ * sandbox_eth_enabled() - Check if Ethernet is enabled
+ *
+ * Returns: true if Ethernet is enabled on sandbox, False if not
+ */
+bool sandbox_eth_enabled(void);
+
+/**
+ * sandbox_sf_bootdev_enabled() - Check if SPI flash bootdevs should be bound
+ *
+ * Returns: true if sandbox should bind bootdevs for SPI flash, false if not
+ */
+bool sandbox_sf_bootdev_enabled(void);
+
+/**
+ * sandbox_sf_set_enable_bootdevs() - Enable / disable the SPI flash bootdevs
+ *
+ * @enable: true to bind the SPI flash bootdevs, false to skip
+ */
+void sandbox_sf_set_enable_bootdevs(bool enable);
 
 #endif

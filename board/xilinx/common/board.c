@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0+
 /*
- * (C) Copyright 2014 - 2020 Xilinx, Inc.
- * Michal Simek <michal.simek@xilinx.com>
+ * (C) Copyright 2014 - 2022, Xilinx, Inc.
+ * (C) Copyright 2022 - 2023, Advanced Micro Devices, Inc.
+ *
+ * Michal Simek <michal.simek@amd.com>
  */
 
 #include <common.h>
@@ -9,6 +11,7 @@
 #include <efi_loader.h>
 #include <env.h>
 #include <image.h>
+#include <init.h>
 #include <lmb.h>
 #include <log.h>
 #include <asm/global_data.h>
@@ -22,6 +25,7 @@
 #include <i2c_eeprom.h>
 #include <net.h>
 #include <generated/dt.h>
+#include <slre.h>
 #include <soc.h>
 #include <linux/ctype.h>
 #include <linux/kernel.h>
@@ -54,34 +58,6 @@ struct efi_capsule_update_info update_info = {
 u8 num_image_type_guids = ARRAY_SIZE(fw_images);
 #endif /* EFI_HAVE_CAPSULE_SUPPORT */
 
-#if defined(CONFIG_ZYNQ_GEM_I2C_MAC_OFFSET)
-int zynq_board_read_rom_ethaddr(unsigned char *ethaddr)
-{
-	int ret = -EINVAL;
-	struct udevice *dev;
-	ofnode eeprom;
-
-	eeprom = ofnode_get_chosen_node("xlnx,eeprom");
-	if (!ofnode_valid(eeprom))
-		return -ENODEV;
-
-	debug("%s: Path to EEPROM %s\n", __func__,
-	      ofnode_read_chosen_string("xlnx,eeprom"));
-
-	ret = uclass_get_device_by_ofnode(UCLASS_I2C_EEPROM, eeprom, &dev);
-	if (ret)
-		return ret;
-
-	ret = dm_i2c_read(dev, CONFIG_ZYNQ_GEM_I2C_MAC_OFFSET, ethaddr, 6);
-	if (ret)
-		debug("%s: I2C EEPROM MAC address read failed\n", __func__);
-	else
-		debug("%s: I2C EEPROM MAC %pM\n", __func__, ethaddr);
-
-	return ret;
-}
-#endif
-
 #define EEPROM_HEADER_MAGIC		0xdaaddeed
 #define EEPROM_HDR_MANUFACTURER_LEN	16
 #define EEPROM_HDR_NAME_LEN		16
@@ -110,7 +86,7 @@ static struct xilinx_board_description *board_info;
 struct xilinx_legacy_format {
 	char board_sn[18]; /* 0x0 */
 	char unused0[14]; /* 0x12 */
-	char eth_mac[6]; /* 0x20 */
+	char eth_mac[ETH_ALEN]; /* 0x20 */
 	char unused1[170]; /* 0x26 */
 	char board_name[11]; /* 0xd0 */
 	char unused2[5]; /* 0xdc */
@@ -126,9 +102,13 @@ static void xilinx_eeprom_legacy_cleanup(char *eeprom, int size)
 	for (i = 0; i < size; i++) {
 		byte = eeprom[i];
 
-		/* Remove all ffs and spaces */
-		if (byte == 0xff || byte == ' ')
+		/* Remove all non printable chars but ignore MAC address */
+		if ((i < offsetof(struct xilinx_legacy_format, eth_mac) ||
+		     i >= offsetof(struct xilinx_legacy_format, unused1)) &&
+		     (byte < '!' || byte > '~')) {
 			eeprom[i] = 0;
+			continue;
+		}
 
 		/* Convert strings to lower case */
 		if (byte >= 'A' && byte <= 'Z')
@@ -161,21 +141,25 @@ static int xilinx_read_eeprom_legacy(struct udevice *dev, char *name,
 
 	xilinx_eeprom_legacy_cleanup((char *)eeprom_content, size);
 
-	printf("Xilinx I2C Legacy format at %s:\n", name);
-	printf(" Board name:\t%s\n", eeprom_content->board_name);
-	printf(" Board rev:\t%s\n", eeprom_content->board_revision);
-	printf(" Board SN:\t%s\n", eeprom_content->board_sn);
+	/* Terminating \0 chars are the part of desc fields already */
+	strlcpy(desc->name, eeprom_content->board_name,
+		sizeof(eeprom_content->board_name) + 1);
+	strlcpy(desc->revision, eeprom_content->board_revision,
+		sizeof(eeprom_content->board_revision) + 1);
+	strlcpy(desc->serial, eeprom_content->board_sn,
+		sizeof(eeprom_content->board_sn) + 1);
 
 	eth_valid = is_valid_ethaddr((const u8 *)eeprom_content->eth_mac);
 	if (eth_valid)
-		printf(" Ethernet mac:\t%pM\n", eeprom_content->eth_mac);
-
-	/* Terminating \0 chars ensure end of string */
-	strcpy(desc->name, eeprom_content->board_name);
-	strcpy(desc->revision, eeprom_content->board_revision);
-	strcpy(desc->serial, eeprom_content->board_sn);
-	if (eth_valid)
 		memcpy(desc->mac_addr[0], eeprom_content->eth_mac, ETH_ALEN);
+
+	printf("Xilinx I2C Legacy format at %s:\n", name);
+	printf(" Board name:\t%s\n", desc->name);
+	printf(" Board rev:\t%s\n", desc->revision);
+	printf(" Board SN:\t%s\n", desc->serial);
+
+	if (eth_valid)
+		printf(" Ethernet mac:\t%pM\n", desc->mac_addr);
 
 	desc->header = EEPROM_HEADER_MAGIC;
 
@@ -495,6 +479,21 @@ static char *board_name = DEVICE_TREE;
 int __maybe_unused board_fit_config_name_match(const char *name)
 {
 	debug("%s: Check %s, default %s\n", __func__, name, board_name);
+
+#if !defined(CONFIG_SPL_BUILD)
+	if (CONFIG_IS_ENABLED(REGEX)) {
+		struct slre slre;
+		int ret;
+
+		ret = slre_compile(&slre, name);
+		if (ret) {
+			ret = slre_match(&slre, board_name, strlen(board_name),
+					 NULL);
+			debug("%s: name match ret = %d\n", __func__,  ret);
+			return !ret;
+		}
+	}
+#endif
 
 	if (!strcmp(name, board_name))
 		return 0;

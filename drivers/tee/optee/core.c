@@ -73,7 +73,7 @@ static struct optee_service *find_service_driver(const struct tee_optee_ta_uuid 
 
 	for (idx = 0; idx < service_cnt; idx++, service++) {
 		tee_optee_ta_uuid_to_octets(loc_uuid, &service->uuid);
-		if (!memcmp(uuid, loc_uuid, sizeof(uuid)))
+		if (!memcmp(uuid, loc_uuid, sizeof(*uuid)))
 			return service;
 	}
 
@@ -92,7 +92,8 @@ static int bind_service_list(struct udevice *dev, struct tee_shm *service_list, 
 		if (!service)
 			continue;
 
-		ret = device_bind_driver(dev, service->driver_name, service->driver_name, NULL);
+		ret = device_bind_driver_to_node(dev, service->driver_name, service->driver_name,
+						 dev_ofnode(dev), NULL);
 		if (ret) {
 			dev_warn(dev, "%s was not bound: %d, ignored\n", service->driver_name, ret);
 			continue;
@@ -102,13 +103,14 @@ static int bind_service_list(struct udevice *dev, struct tee_shm *service_list, 
 	return 0;
 }
 
-static int __enum_services(struct udevice *dev, struct tee_shm *shm, size_t *shm_size, u32 tee_sess)
+static int __enum_services(struct udevice *dev, struct tee_shm *shm, size_t *shm_size, u32 tee_sess,
+			   unsigned int pta_cmd)
 {
 	struct tee_invoke_arg arg = { };
 	struct tee_param param = { };
 	int ret = 0;
 
-	arg.func = PTA_CMD_GET_DEVICES;
+	arg.func = pta_cmd;
 	arg.session = tee_sess;
 
 	/* Fill invoke cmd params */
@@ -118,7 +120,7 @@ static int __enum_services(struct udevice *dev, struct tee_shm *shm, size_t *shm
 
 	ret = tee_invoke_func(dev, &arg, 1, &param);
 	if (ret || (arg.ret && arg.ret != TEE_ERROR_SHORT_BUFFER)) {
-		dev_err(dev, "PTA_CMD_GET_DEVICES invoke function err: 0x%x\n", arg.ret);
+		dev_err(dev, "Enumeration command 0x%x failed: 0x%x\n", pta_cmd, arg.ret);
 		return -EINVAL;
 	}
 
@@ -127,12 +129,13 @@ static int __enum_services(struct udevice *dev, struct tee_shm *shm, size_t *shm
 	return 0;
 }
 
-static int enum_services(struct udevice *dev, struct tee_shm **shm, size_t *count, u32 tee_sess)
+static int enum_services(struct udevice *dev, struct tee_shm **shm, size_t *count, u32 tee_sess,
+			 unsigned int pta_cmd)
 {
 	size_t shm_size = 0;
 	int ret;
 
-	ret = __enum_services(dev, NULL, &shm_size, tee_sess);
+	ret = __enum_services(dev, NULL, &shm_size, tee_sess, pta_cmd);
 	if (ret)
 		return ret;
 
@@ -142,7 +145,7 @@ static int enum_services(struct udevice *dev, struct tee_shm **shm, size_t *coun
 		return ret;
 	}
 
-	ret = __enum_services(dev, *shm, &shm_size, tee_sess);
+	ret = __enum_services(dev, *shm, &shm_size, tee_sess, pta_cmd);
 	if (!ret)
 		*count = shm_size / sizeof(struct tee_optee_ta_uuid);
 
@@ -174,20 +177,32 @@ static int bind_service_drivers(struct udevice *dev)
 	struct tee_shm *service_list = NULL;
 	size_t service_count;
 	u32 tee_sess;
-	int ret;
+	int ret, ret2;
 
 	ret = open_enum_session(dev, &tee_sess);
 	if (ret)
 		return ret;
 
-	ret = enum_services(dev, &service_list, &service_count, tee_sess);
+	ret = enum_services(dev, &service_list, &service_count, tee_sess,
+			    PTA_CMD_GET_DEVICES);
 	if (!ret)
 		ret = bind_service_list(dev, service_list, service_count);
 
 	tee_shm_free(service_list);
+
+	ret2 = enum_services(dev, &service_list, &service_count, tee_sess,
+			     PTA_CMD_GET_DEVICES_SUPP);
+	if (!ret2)
+		ret2 = bind_service_list(dev, service_list, service_count);
+
+	tee_shm_free(service_list);
+
 	tee_close_session(dev, tee_sess);
 
-	return ret;
+	if (ret)
+		return ret;
+
+	return ret2;
 }
 
 /**
@@ -832,9 +847,10 @@ static int optee_probe(struct udevice *dev)
 		 * Discovery of TAs on the TEE bus is not supported in U-Boot:
 		 * only bind the drivers associated to the supported OP-TEE TA
 		 */
-		ret = device_bind_driver(dev, "optee-rng", "optee-rng", NULL);
+		ret = device_bind_driver_to_node(dev, "optee-rng", "optee-rng",
+						 dev_ofnode(dev), NULL);
 		if (ret)
-			return ret;
+			dev_warn(dev, "optee-rng failed to bind: %d\n", ret);
 	}
 
 	return 0;

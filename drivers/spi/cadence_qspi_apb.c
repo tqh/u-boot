@@ -479,6 +479,19 @@ int cadence_qspi_apb_command_read(struct cadence_spi_priv *priv,
 	/* 0 means 1 byte. */
 	reg |= (((rxlen - 1) & CQSPI_REG_CMDCTRL_RD_BYTES_MASK)
 		<< CQSPI_REG_CMDCTRL_RD_BYTES_LSB);
+
+	/* setup ADDR BIT field */
+	if (op->addr.nbytes) {
+		writel(op->addr.val, priv->regbase + CQSPI_REG_CMDADDRESS);
+		/*
+		 * address bytes are zero indexed
+		 */
+		reg |= (((op->addr.nbytes - 1) &
+			  CQSPI_REG_CMDCTRL_ADD_BYTES_MASK) <<
+			  CQSPI_REG_CMDCTRL_ADD_BYTES_LSB);
+		reg |= (0x1 << CQSPI_REG_CMDCTRL_ADDR_EN_LSB);
+	}
+
 	status = cadence_qspi_apb_exec_flash_cmd(reg_base, reg);
 	if (status != 0)
 		return status;
@@ -735,8 +748,7 @@ int cadence_qspi_apb_read_execute(struct cadence_spi_priv *priv,
 	void *buf = op->data.buf.in;
 	size_t len = op->data.nbytes;
 
-	if (CONFIG_IS_ENABLED(ARCH_VERSAL))
-		cadence_qspi_apb_enable_linear_mode(true);
+	cadence_qspi_apb_enable_linear_mode(true);
 
 	if (priv->use_dac_mode && (from + len < priv->ahbsize)) {
 		if (len < 256 ||
@@ -904,9 +916,6 @@ int cadence_qspi_apb_write_execute(struct cadence_spi_priv *priv,
 	u32 to = op->addr.val;
 	const void *buf = op->data.buf.out;
 	size_t len = op->data.nbytes;
-
-	if (CONFIG_IS_ENABLED(ARCH_VERSAL))
-		cadence_qspi_apb_enable_linear_mode(true);
 
 	/*
 	 * Some flashes like the Cypress Semper flash expect a dummy 4-byte

@@ -236,7 +236,7 @@ unsigned long do_go_exec(ulong (*entry)(int, char * const []), int argc,
 	return ret;
 }
 
-#if !defined(CONFIG_SYS_SDRAM_BASE) && !defined(CONFIG_SYS_SDRAM_SIZE)
+#if !defined(CFG_SYS_SDRAM_BASE) && !defined(CFG_SYS_SDRAM_SIZE)
 int dram_init_banksize(void)
 {
 	int ret;
@@ -261,7 +261,7 @@ int dram_init(void)
 #else
 int dram_init_banksize(void)
 {
-	gd->bd->bi_dram[0].start = CONFIG_SYS_SDRAM_BASE;
+	gd->bd->bi_dram[0].start = CFG_SYS_SDRAM_BASE;
 	gd->bd->bi_dram[0].size = get_effective_memsize();
 
 	mem_map_fill();
@@ -271,8 +271,8 @@ int dram_init_banksize(void)
 
 int dram_init(void)
 {
-	gd->ram_size = get_ram_size((void *)CONFIG_SYS_SDRAM_BASE,
-				    CONFIG_SYS_SDRAM_SIZE);
+	gd->ram_size = get_ram_size((void *)CFG_SYS_SDRAM_BASE,
+				    CFG_SYS_SDRAM_SIZE);
 
 	return 0;
 }
@@ -611,8 +611,7 @@ enum env_location env_get_location(enum env_operation op, int prio)
 
 void set_dfu_alt_info(char *interface, char *devstr)
 {
-	int multiboot;
-	int bootseq = 0;
+	int multiboot, bootseq = 0, len = 0;
 
 	ALLOC_CACHE_ALIGN_BUFFER(char, buf, DFU_ALT_BUF_LEN);
 
@@ -634,29 +633,33 @@ void set_dfu_alt_info(char *interface, char *devstr)
 	case SD1_LSHFT_MODE:
 	case SD_MODE1:
 		bootseq = mmc_get_env_dev();
-		if (!multiboot)
-			snprintf(buf, DFU_ALT_BUF_LEN,
-				 "mmc %d=boot.bin fat %d 1;"
-				 "%s fat %d 1",
-				 bootseq, bootseq,
-				 CONFIG_SPL_FS_LOAD_PAYLOAD_NAME, bootseq);
-		else
-			snprintf(buf, DFU_ALT_BUF_LEN,
-				 "mmc %d=boot%04d.bin fat %d 1;"
-				 "%s fat %d 1",
-				 bootseq, multiboot, bootseq,
-				 CONFIG_SPL_FS_LOAD_PAYLOAD_NAME, bootseq);
+
+		len += snprintf(buf + len, DFU_ALT_BUF_LEN, "mmc %d=boot",
+			       bootseq);
+
+		if (multiboot)
+			len += snprintf(buf + len, DFU_ALT_BUF_LEN,
+				       "%04d", multiboot);
+
+		len += snprintf(buf + len, DFU_ALT_BUF_LEN, ".bin fat %d 1",
+			       bootseq);
+#if defined(CONFIG_SPL_FS_LOAD_PAYLOAD_NAME)
+		len += snprintf(buf + len, DFU_ALT_BUF_LEN, ";%s fat %d 1",
+			       CONFIG_SPL_FS_LOAD_PAYLOAD_NAME, bootseq);
+#endif
 		break;
-#if defined(CONFIG_SYS_SPI_U_BOOT_OFFS)
 	case QSPI_MODE_24BIT:
 	case QSPI_MODE_32BIT:
-		snprintf(buf, DFU_ALT_BUF_LEN,
-			 "sf 0:0=boot.bin raw %x 0x1500000;"
-			 "%s raw 0x%x 0x500000",
-			 multiboot * SZ_32K, CONFIG_SPL_FS_LOAD_PAYLOAD_NAME,
-			 CONFIG_SYS_SPI_U_BOOT_OFFS);
-		break;
+		len += snprintf(buf + len, DFU_ALT_BUF_LEN,
+			       "sf 0:0=boot.bin raw %x 0x1500000",
+			       multiboot * SZ_32K);
+#if defined(CONFIG_SPL_FS_LOAD_PAYLOAD_NAME) && defined(CONFIG_SYS_SPI_U_BOOT_OFFS)
+		len += snprintf(buf + len, DFU_ALT_BUF_LEN,
+			       ";%s raw 0x%x 0x500000",
+			       CONFIG_SPL_FS_LOAD_PAYLOAD_NAME,
+			       CONFIG_SYS_SPI_U_BOOT_OFFS);
 #endif
+		break;
 	default:
 		return;
 	}

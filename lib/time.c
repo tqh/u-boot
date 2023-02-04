@@ -19,27 +19,27 @@
 #include <asm/io.h>
 #include <linux/delay.h>
 
-#ifndef CONFIG_WD_PERIOD
-# define CONFIG_WD_PERIOD	(10 * 1000 * 1000)	/* 10 seconds default */
+#ifndef CFG_WD_PERIOD
+# define CFG_WD_PERIOD	(10 * 1000 * 1000)	/* 10 seconds default */
 #endif
 
 DECLARE_GLOBAL_DATA_PTR;
 
-#ifdef CONFIG_SYS_TIMER_RATE
+#ifdef CFG_SYS_TIMER_RATE
 /* Returns tick rate in ticks per second */
 ulong notrace get_tbclk(void)
 {
-	return CONFIG_SYS_TIMER_RATE;
+	return CFG_SYS_TIMER_RATE;
 }
 #endif
 
-#ifdef CONFIG_SYS_TIMER_COUNTER
+#ifdef CFG_SYS_TIMER_COUNTER
 unsigned long notrace timer_read_counter(void)
 {
 #ifdef CONFIG_SYS_TIMER_COUNTS_DOWN
-	return ~readl(CONFIG_SYS_TIMER_COUNTER);
+	return ~readl(CFG_SYS_TIMER_COUNTER);
 #else
-	return readl(CONFIG_SYS_TIMER_COUNTER);
+	return readl(CFG_SYS_TIMER_COUNTER);
 #endif
 }
 
@@ -47,8 +47,8 @@ ulong timer_get_boot_us(void)
 {
 	ulong count = timer_read_counter();
 
-#ifdef CONFIG_SYS_TIMER_RATE
-	const ulong timer_rate = CONFIG_SYS_TIMER_RATE;
+#ifdef CFG_SYS_TIMER_RATE
+	const ulong timer_rate = CFG_SYS_TIMER_RATE;
 
 	if (timer_rate == 1000000)
 		return count;
@@ -63,7 +63,7 @@ ulong timer_get_boot_us(void)
 }
 
 #else
-extern unsigned long __weak timer_read_counter(void);
+extern unsigned long timer_read_counter(void);
 #endif
 
 #if CONFIG_IS_ENABLED(TIMER)
@@ -199,7 +199,7 @@ void udelay(unsigned long usec)
 
 	do {
 		schedule();
-		kv = usec > CONFIG_WD_PERIOD ? CONFIG_WD_PERIOD : usec;
+		kv = usec > CFG_WD_PERIOD ? CFG_WD_PERIOD : usec;
 		__udelay(kv);
 		usec -= kv;
 	} while(usec);

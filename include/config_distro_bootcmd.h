@@ -484,7 +484,7 @@
 				"${prefix}${boot_syslinux_conf}; then "   \
 			"echo Found ${prefix}${boot_syslinux_conf}; "     \
 			"run boot_extlinux; "                             \
-			"echo SCRIPT FAILED: continuing...; "             \
+			"echo EXTLINUX FAILED: continuing...; "           \
 		"fi\0"                                                    \
 	\
 	"boot_a_script="                                                  \
@@ -521,6 +521,9 @@
 			"if fstype ${devtype} "                           \
 					"${devnum}:${distro_bootpart} "   \
 					"bootfstype; then "               \
+				"part uuid ${devtype} "                   \
+					"${devnum}:${distro_bootpart} "   \
+					"distro_bootpart_uuid ; "         \
 				"run scan_dev_for_boot; "                 \
 			"fi; "                                            \
 		"done; "                                                  \

@@ -25,7 +25,7 @@
 	};
 
 	memory {
-		reg = <0 CONFIG_SYS_SDRAM_SIZE>;
+		reg = <0 CFG_SYS_SDRAM_SIZE>;
 	};
 
 	reserved-memory {
@@ -66,10 +66,6 @@
 	eth@10002000 {
 		compatible = "sandbox,eth";
 		reg = <0x10002000 0x1000>;
-	};
-
-	host-fs {
-		compatible = "sandbox,bootdev-host";
 	};
 
 	i2c_0: i2c@0 {

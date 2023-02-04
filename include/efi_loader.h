@@ -328,6 +328,7 @@ extern const efi_guid_t efi_esrt_guid;
 extern const efi_guid_t smbios_guid;
 /*GUID of console */
 extern const efi_guid_t efi_guid_text_input_protocol;
+extern const efi_guid_t efi_guid_text_output_protocol;
 
 extern char __efi_runtime_start[], __efi_runtime_stop[];
 extern char __efi_runtime_rel_start[], __efi_runtime_rel_stop[];
@@ -707,6 +708,9 @@ int algo_to_len(const char *algo);
 
 int efi_link_dev(efi_handle_t handle, struct udevice *dev);
 int efi_unlink_dev(efi_handle_t handle);
+bool efi_varname_is_load_option(u16 *var_name16, int *index);
+efi_status_t efi_next_variable_name(efi_uintn_t *size, u16 **buf,
+				    efi_guid_t *guid);
 
 /**
  * efi_size_in_pages() - convert size in bytes to size in pages
@@ -733,6 +737,9 @@ efi_status_t efi_allocate_pool(enum efi_memory_type pool_type,
 			       efi_uintn_t size, void **buffer);
 /* EFI pool memory free function. */
 efi_status_t efi_free_pool(void *buffer);
+/* Allocate and retrieve EFI memory map */
+efi_status_t efi_get_memory_map_alloc(efi_uintn_t *map_size,
+				      struct efi_mem_desc **memory_map);
 /* Returns the EFI memory map */
 efi_status_t efi_get_memory_map(efi_uintn_t *memory_map_size,
 				struct efi_mem_desc *memory_map,

@@ -8,7 +8,7 @@ endif
 ifdef CONFIG_CONSOLE_RECORD
 obj-$(CONFIG_CMD_PAUSE) += test_pause.o
 endif
-obj-y += mem.o
+obj-y += exit.o mem.o
 obj-$(CONFIG_CMD_ADDRMAP) += addrmap.o
 obj-$(CONFIG_CMD_FDT) += fdt.o
 obj-$(CONFIG_CONSOLE_TRUETYPE) += font.o
@@ -20,3 +20,4 @@ ifdef CONFIG_SANDBOX
 obj-$(CONFIG_CMD_SETEXPR) += setexpr.o
 endif
 obj-$(CONFIG_CMD_TEMPERATURE) += temperature.o
+obj-$(CONFIG_CMD_WGET) += wget.o

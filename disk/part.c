@@ -139,7 +139,7 @@ void dev_print(struct blk_desc *dev_desc)
 	case UCLASS_USB:
 	case UCLASS_NVME:
 	case UCLASS_PVBLOCK:
-	case UCLASS_ROOT:
+	case UCLASS_HOST:
 		printf ("Vendor: %s Rev: %s Prod: %s\n",
 			dev_desc->vendor,
 			dev_desc->revision,
@@ -264,7 +264,7 @@ static void print_part_header(const char *type, struct blk_desc *dev_desc)
 	case UCLASS_MMC:
 		puts ("MMC");
 		break;
-	case UCLASS_ROOT:
+	case UCLASS_HOST:
 		puts ("HOST");
 		break;
 	case UCLASS_NVME:
@@ -433,25 +433,17 @@ int blk_get_device_part_str(const char *ifname, const char *dev_part_str,
 	int part;
 	struct disk_partition tmpinfo;
 
+	*dev_desc = NULL;
+	memset(info, 0, sizeof(*info));
+
 #if IS_ENABLED(CONFIG_SANDBOX) || IS_ENABLED(CONFIG_SEMIHOSTING)
 	/*
 	 * Special-case a pseudo block device "hostfs", to allow access to the
 	 * host's own filesystem.
 	 */
-	if (0 == strcmp(ifname, "hostfs")) {
-		*dev_desc = NULL;
-		info->start = 0;
-		info->size = 0;
-		info->blksz = 0;
-		info->bootable = 0;
+	if (!strcmp(ifname, "hostfs")) {
 		strcpy((char *)info->type, BOOT_PART_TYPE);
 		strcpy((char *)info->name, "Host filesystem");
-#if CONFIG_IS_ENABLED(PARTITION_UUIDS)
-		info->uuid[0] = 0;
-#endif
-#ifdef CONFIG_PARTITION_TYPE_GUID
-		info->type_guid[0] = 0;
-#endif
 
 		return 0;
 	}
@@ -462,19 +454,14 @@ int blk_get_device_part_str(const char *ifname, const char *dev_part_str,
 	 * Special-case ubi, ubi goes through a mtd, rather than through
 	 * a regular block device.
 	 */
-	if (0 == strcmp(ifname, "ubi")) {
+	if (!strcmp(ifname, "ubi")) {
 		if (!ubifs_is_mounted()) {
 			printf("UBIFS not mounted, use ubifsmount to mount volume first!\n");
 			return -EINVAL;
 		}
 
-		*dev_desc = NULL;
-		memset(info, 0, sizeof(*info));
 		strcpy((char *)info->type, BOOT_PART_TYPE);
 		strcpy((char *)info->name, "UBI");
-#if CONFIG_IS_ENABLED(PARTITION_UUIDS)
-		info->uuid[0] = 0;
-#endif
 		return 0;
 	}
 #endif
@@ -782,4 +769,20 @@ void part_set_generic_name(const struct blk_desc *dev_desc,
 	}
 
 	sprintf(name, "%s%c%d", devtype, 'a' + dev_desc->devnum, part_num);
+}
+
+int part_get_bootable(struct blk_desc *desc)
+{
+	struct disk_partition info;
+	int p;
+
+	for (p = 1; p <= MAX_SEARCH_PARTITIONS; p++) {
+		int ret;
+
+		ret = part_get_info(desc, p, &info);
+		if (!ret && info.bootable)
+			return p;
+	}
+
+	return 0;
 }

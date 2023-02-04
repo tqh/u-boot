@@ -15,7 +15,7 @@
 / {
 	config {
 		u-boot,spl-payload-offset = <0x80000>; /* @ 512KB */
-		u-boot,mmc-env-offset = <0x4000>;      /* @  16KB */
+		u-boot,mmc-env-offset = <0x5000>;      /* @  20KB */
 		u-boot,efi-partition-entries-offset = <0x200000>; /* 2MB */
 		u-boot,boot-led = "module_led";
 		sysreset-gpio = <&gpio1 RK_PA6 GPIO_ACTIVE_HIGH>;
@@ -46,14 +46,14 @@
 
 &binman {
 	simple-bin {
-		blob {
+		fit {
 			offset = <((CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR - 64) * 512)>;
 		};
 	};
 
 #ifdef CONFIG_ROCKCHIP_SPI_IMAGE
 	simple-bin-spi {
-		blob {
+		fit {
 			/* same as u-boot,spl-payload-offset */
 			offset = <0x80000>;
 		};

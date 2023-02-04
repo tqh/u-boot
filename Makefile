@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0+
 
-VERSION = 2022
-PATCHLEVEL = 10
+VERSION = 2023
+PATCHLEVEL = 04
 SUBLEVEL =
-EXTRAVERSION =
+EXTRAVERSION = -rc1
 NAME =
 
 # *DOCUMENTATION*
@@ -761,10 +761,10 @@ KBUILD_CFLAGS += $(call cc-disable-warning, maybe-uninitialized)
 # change __FILE__ to the relative path from the srctree
 KBUILD_CFLAGS	+= $(call cc-option,-fmacro-prefix-map=$(srctree)/=)
 
-KBUILD_CFLAGS	+= -g
+KBUILD_CFLAGS	+= -gdwarf-4
 # $(KBUILD_AFLAGS) sets -g, which causes gcc to pass a suitable -g<format>
 # option to the assembler.
-KBUILD_AFLAGS	+= -g
+KBUILD_AFLAGS	+= -gdwarf-4
 
 # Report stack usage if supported
 # ARC tools based on GCC 7.1 has an issue with stack usage
@@ -805,6 +805,8 @@ include scripts/Makefile.extrawarn
 KBUILD_CPPFLAGS += $(KCPPFLAGS)
 KBUILD_AFLAGS += $(KAFLAGS)
 KBUILD_CFLAGS += $(KCFLAGS)
+
+KBUILD_LDFLAGS  += $(call ld-option,--no-warn-rwx-segments)
 
 KBUILD_HOSTCFLAGS += $(if $(CONFIG_TOOLS_DEBUG),-g)
 
@@ -1004,13 +1006,8 @@ ifeq ($(CONFIG_INIT_SP_RELATIVE)$(CONFIG_OF_SEPARATE),yy)
 INPUTS-y += init_sp_bss_offset_check
 endif
 
-ifeq ($(CONFIG_ARCH_ROCKCHIP)$(CONFIG_SPL),yy)
-# Binman image dependencies
-ifeq ($(CONFIG_ARM64),y)
-INPUTS-y += u-boot.itb
-else
+ifeq ($(CONFIG_ARCH_ROCKCHIP)_$(CONFIG_SPL_FRAMEWORK),y_)
 INPUTS-y += u-boot.img
-endif
 endif
 
 INPUTS-$(CONFIG_X86) += u-boot-x86-start16.bin u-boot-x86-reset16.bin \
@@ -1073,10 +1070,6 @@ cmd_lzma = lzma -c -z -k -9 $< > $@
 
 cfg: u-boot.cfg
 
-quiet_cmd_cfgcheck = CFGCHK  $2
-cmd_cfgcheck = $(srctree)/scripts/check-config.sh $2 \
-		$(srctree)/scripts/config_whitelist.txt $(srctree)
-
 quiet_cmd_ofcheck = OFCHK   $2
 cmd_ofcheck = $(srctree)/scripts/check-of.sh $2 \
 		$(srctree)/scripts/of_allowlist.txt
@@ -1108,17 +1101,14 @@ define deprecated
 
 endef
 
-PHONY += inputs
-inputs: $(INPUTS-y)
-
-all: .binman_stamp inputs
+# Timestamp file to make sure that binman always runs
+.binman_stamp: $(INPUTS-y) FORCE
 ifeq ($(CONFIG_BINMAN),y)
 	$(call if_changed,binman)
 endif
-
-# Timestamp file to make sure that binman always runs
-.binman_stamp: FORCE
 	@touch $@
+
+all: .binman_stamp
 
 ifeq ($(CONFIG_DEPRECATED),y)
 	$(warning "You have deprecated configuration options enabled in your .config! Please check your configuration.")
@@ -1141,16 +1131,12 @@ endif
 	$(call deprecated,CONFIG_WDT,DM watchdog,v2019.10,\
 		$(CONFIG_WATCHDOG)$(CONFIG_HW_WATCHDOG))
 	$(call deprecated,CONFIG_DM_I2C,I2C drivers,v2022.04,$(CONFIG_SYS_I2C_LEGACY))
-	@# CONFIG_SYS_TIMER_RATE has brackets in it for some boards which
+	@# CFG_SYS_TIMER_RATE has brackets in it for some boards which
 	@# confuses this rule. Use if() to send just a single character which
 	@# is enable to tell 'deprecated' that one of these symbols exists
-	$(call deprecated,CONFIG_TIMER,Timer drivers,v2023.01,$(if $(strip $(CONFIG_SYS_TIMER_RATE)$(CONFIG_SYS_TIMER_COUNTER)),x))
+	$(call deprecated,CONFIG_TIMER,Timer drivers,v2023.01,$(if $(strip $(CFG_SYS_TIMER_RATE)$(CFG_SYS_TIMER_COUNTER)),x))
 	$(call deprecated,CONFIG_DM_SERIAL,Serial drivers,v2023.04,$(CONFIG_SERIAL))
 	$(call deprecated,CONFIG_DM_SCSI,SCSI drivers,v2023.04,$(CONFIG_SCSI))
-	@# Check that this build does not use CONFIG options that we do not
-	@# know about unless they are in Kconfig. All the existing CONFIG
-	@# options are whitelisted, so new ones should not be added.
-	$(call cmd,cfgcheck,u-boot.cfg)
 	@# Check that this build does not override OF_HAS_PRIOR_STAGE by
 	@# disabling OF_BOARD.
 	$(call cmd,ofcheck,$(KCONFIG_CONFIG))
@@ -1336,8 +1322,8 @@ cmd_binman = $(srctree)/tools/binman/binman $(if $(BINMAN_DEBUG),-D) \
 		$(foreach f,$(BINMAN_TOOLPATHS),--toolpath $(f)) \
                 --toolpath $(objtree)/tools \
 		$(if $(BINMAN_VERBOSE),-v$(BINMAN_VERBOSE)) \
-		build -u -d u-boot.dtb -O . -m --allow-missing \
-		--fake-ext-blobs \
+		build -u -d u-boot.dtb -O . -m \
+		$(if $(BINMAN_ALLOW_MISSING),--allow-missing --ignore-missing) \
 		-I . -I $(srctree) -I $(srctree)/board/$(BOARDDIR) \
 		-I arch/$(ARCH)/dts -a of-list=$(CONFIG_OF_LIST) \
 		$(foreach f,$(BINMAN_INDIRS),-I $(f)) \
@@ -1364,8 +1350,8 @@ u-boot.ldr.hex u-boot.ldr.srec: u-boot.ldr FORCE
 # U-Boot entry point, needed for booting of full-blown U-Boot
 # from the SPL U-Boot version.
 #
-ifndef CONFIG_SYS_UBOOT_START
-CONFIG_SYS_UBOOT_START := $(CONFIG_TEXT_BASE)
+ifndef CFG_SYS_UBOOT_START
+CFG_SYS_UBOOT_START := $(CONFIG_TEXT_BASE)
 endif
 
 # Boards with more complex image requirements can provide an .its source file
@@ -1379,9 +1365,6 @@ $(U_BOOT_ITS): $(subst ",,$(CONFIG_SPL_FIT_SOURCE))
 else
 ifneq ($(CONFIG_USE_SPL_FIT_GENERATOR),)
 U_BOOT_ITS := u-boot.its
-ifeq ($(CONFIG_SPL_FIT_GENERATOR),"arch/arm/mach-rockchip/make_fit_atf.py")
-U_BOOT_ITS_DEPS += u-boot
-endif
 $(U_BOOT_ITS): $(U_BOOT_ITS_DEPS) FORCE
 	$(srctree)/$(CONFIG_SPL_FIT_GENERATOR) \
 	$(patsubst %,arch/$(ARCH)/dts/%.dtb,$(subst ",,$(CONFIG_OF_LIST))) > $@
@@ -1390,7 +1373,7 @@ endif
 
 ifdef CONFIG_SPL_LOAD_FIT
 MKIMAGEFLAGS_u-boot.img = -f auto -A $(ARCH) -T firmware -C none -O u-boot \
-	-a $(CONFIG_TEXT_BASE) -e $(CONFIG_SYS_UBOOT_START) \
+	-a $(CONFIG_TEXT_BASE) -e $(CFG_SYS_UBOOT_START) \
 	-p $(CONFIG_FIT_EXTERNAL_OFFSET) \
 	-n "U-Boot $(UBOOTRELEASE) for $(BOARD) board" -E \
 	$(patsubst %,-b arch/$(ARCH)/dts/%.dtb,$(subst ",,$(DEVICE_TREE))) \
@@ -1398,10 +1381,10 @@ MKIMAGEFLAGS_u-boot.img = -f auto -A $(ARCH) -T firmware -C none -O u-boot \
 	$(patsubst %,-b arch/$(ARCH)/dts/%.dtbo,$(subst ",,$(CONFIG_OF_OVERLAY_LIST)))
 else
 MKIMAGEFLAGS_u-boot.img = -A $(ARCH) -T firmware -C none -O u-boot \
-	-a $(CONFIG_TEXT_BASE) -e $(CONFIG_SYS_UBOOT_START) \
+	-a $(CONFIG_TEXT_BASE) -e $(CFG_SYS_UBOOT_START) \
 	-n "U-Boot $(UBOOTRELEASE) for $(BOARD) board"
 MKIMAGEFLAGS_u-boot-ivt.img = -A $(ARCH) -T firmware_ivt -C none -O u-boot \
-	-a $(CONFIG_TEXT_BASE) -e $(CONFIG_SYS_UBOOT_START) \
+	-a $(CONFIG_TEXT_BASE) -e $(CFG_SYS_UBOOT_START) \
 	-n "U-Boot $(UBOOTRELEASE) for $(BOARD) board"
 u-boot-ivt.img: MKIMAGEOUTPUT = u-boot-ivt.img.log
 endif
@@ -1422,7 +1405,7 @@ KWD_CONFIG_FILE = $(shell \
 MKIMAGEFLAGS_u-boot.kwb = -n $(KWD_CONFIG_FILE) \
 	-T kwbimage -a $(CONFIG_TEXT_BASE) -e $(CONFIG_TEXT_BASE)
 
-MKIMAGEFLAGS_u-boot-spl.kwb = -n $(KWD_CONFIG_FILE) \
+MKIMAGEFLAGS_u-boot-with-spl.kwb = -n $(KWD_CONFIG_FILE) \
 	-T kwbimage -a $(CONFIG_TEXT_BASE) -e $(CONFIG_TEXT_BASE) \
 	$(if $(KEYDIR),-k $(KEYDIR))
 
@@ -1432,7 +1415,7 @@ MKIMAGEFLAGS_u-boot.pbl = -n $(srctree)/$(CONFIG_SYS_FSL_PBL_RCW:"%"=%) \
 UBOOT_BIN := u-boot.bin
 
 MKIMAGEFLAGS_u-boot-lzma.img = -A $(ARCH) -T standalone -C lzma -O u-boot \
-	-a $(CONFIG_TEXT_BASE) -e $(CONFIG_SYS_UBOOT_START) \
+	-a $(CONFIG_TEXT_BASE) -e $(CFG_SYS_UBOOT_START) \
 	-n "U-Boot $(UBOOTRELEASE) for $(BOARD) board"
 
 u-boot.bin.lzma: u-boot.bin FORCE
@@ -1458,12 +1441,13 @@ MKIMAGEFLAGS_u-boot.itb += -B 0x8
 ifdef U_BOOT_ITS
 u-boot.itb: u-boot-nodtb.bin \
 		$(if $(CONFIG_OF_SEPARATE)$(CONFIG_OF_EMBED)$(CONFIG_SANDBOX),dts/dt.dtb) \
+		$(if $(CONFIG_MULTI_DTB_FIT),$(FINAL_DTB_CONTAINER)) \
 		$(U_BOOT_ITS) FORCE
 	$(call if_changed,mkfitimage)
 	$(BOARD_SIZE_CHECK)
 endif
 
-u-boot-spl.kwb: u-boot.bin spl/u-boot-spl.bin FORCE
+u-boot-with-spl.kwb: u-boot.bin spl/u-boot-spl.bin FORCE
 	$(call if_changed,mkimage)
 	$(BOARD_SIZE_CHECK)
 
@@ -1485,7 +1469,6 @@ OBJCOPYFLAGS_u-boot-with-spl.bin = -I binary -O binary \
 				   --pad-to=$(CONFIG_SPL_PAD_TO)
 u-boot-with-spl.bin: $(SPL_IMAGE) $(SPL_PAYLOAD) FORCE
 	$(call if_changed,pad_cat)
-
 
 ifeq ($(CONFIG_ARCH_LPC32XX)$(CONFIG_SPL),yy)
 MKIMAGEFLAGS_lpc32xx-spl.img = -T lpc32xximage -a $(CONFIG_SPL_TEXT_BASE)
@@ -2375,7 +2358,7 @@ tcheck:
 # Documentation targets
 # ---------------------------------------------------------------------------
 DOC_TARGETS := xmldocs latexdocs pdfdocs htmldocs epubdocs cleandocs \
-	       linkcheckdocs dochelp refcheckdocs
+	       linkcheckdocs dochelp refcheckdocs texinfodocs infodocs
 PHONY += $(DOC_TARGETS)
 $(DOC_TARGETS): scripts_basic FORCE
 	$(Q)$(MAKE) $(build)=doc $@
@@ -2442,11 +2425,13 @@ endif
 	$(Q)$(MAKE) -f $(srctree)/scripts/Makefile.modpost
 
 quiet_cmd_genenv = GENENV  $@
-cmd_genenv = $(OBJCOPY) --dump-section .rodata.default_environment=$@ env/common.o; \
-	sed --in-place -e 's/\x00/\x0A/g' $@; sed --in-place -e '/^\s*$$/d' $@; \
-	sort --field-separator== -k1,1 --stable $@ -o $@
+cmd_genenv = \
+	$(objtree)/tools/printinitialenv | \
+	sed -e '/^\s*$$/d' | \
+	sort --field-separator== -k1,1 --stable -o $@
 
-u-boot-initial-env: u-boot.bin
+u-boot-initial-env: $(env_h) FORCE
+	$(Q)$(MAKE) $(build)=tools $(objtree)/tools/printinitialenv
 	$(call if_changed,genenv)
 
 # Consistency checks

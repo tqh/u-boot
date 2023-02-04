@@ -122,7 +122,7 @@ int dram_init(void)
 	unsigned long addr;
 
 	for (i = 0; i < CONFIG_NR_DRAM_BANKS; i++) {
-		addr = CONFIG_SYS_SDRAM_BASE + (i * SDRAM_BANK_SIZE);
+		addr = CFG_SYS_SDRAM_BASE + (i * SDRAM_BANK_SIZE);
 		gd->ram_size += get_ram_size((long *)addr, SDRAM_BANK_SIZE);
 	}
 	return 0;
@@ -134,7 +134,7 @@ int dram_init_banksize(void)
 	unsigned long addr, size;
 
 	for (i = 0; i < CONFIG_NR_DRAM_BANKS; i++) {
-		addr = CONFIG_SYS_SDRAM_BASE + (i * SDRAM_BANK_SIZE);
+		addr = CFG_SYS_SDRAM_BASE + (i * SDRAM_BANK_SIZE);
 		size = get_ram_size((long *)addr, SDRAM_BANK_SIZE);
 
 		gd->bd->bi_dram[i].start = addr;
@@ -175,10 +175,6 @@ int board_early_init_f(void)
 		debug("UART init failed\n");
 		return err;
 	}
-
-#ifdef CONFIG_SYS_I2C_INIT_BOARD
-	board_i2c_init(gd->fdt_blob);
-#endif
 
 	return exynos_early_init_f();
 }

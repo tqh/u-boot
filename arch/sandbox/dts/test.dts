@@ -94,6 +94,10 @@
 			compatible = "u-boot,distro-efi";
 		};
 
+		theme {
+			font-size = <30>;
+		};
+
 		/*
 		 * This is used for the VBE OS-request tests. A FAT filesystem
 		 * created in a partition with the VBE information appearing
@@ -1013,6 +1017,13 @@
 		non-removable;
 	};
 
+	/* This is used for bootstd bootmenu tests */
+	mmc4 {
+		status = "disabled";
+		compatible = "sandbox,mmc";
+		filename = "mmc4.img";
+	};
+
 	pch {
 		compatible = "sandbox,pch";
 	};
@@ -1025,6 +1036,8 @@
 		#size-cells = <2>;
 		ranges = <0x02000000 0 0x10000000 0x10000000 0 0x2000000
 				0x01000000 0 0x20000000 0x20000000 0 0x2000>;
+		iommu-map = <0x0010 &iommu 0 1>;
+		iommu-map-mask = <0xfffffff8>;
 		pci@0,0 {
 			compatible = "pci-generic";
 			reg = <0x0000 0 0 0 0>;
@@ -1516,10 +1529,16 @@
 
 	sandbox_virtio1 {
 		compatible = "sandbox,virtio1";
+		virtio-type = <4>;	/* rng */
 	};
 
 	sandbox_virtio2 {
 		compatible = "sandbox,virtio2";
+	};
+
+	sandbox-virtio-blk {
+		compatible = "sandbox,virtio1";
+		virtio-type = <2>;	/* block */
 	};
 
 	sandbox_scmi {

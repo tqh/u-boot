@@ -23,15 +23,20 @@ struct orion_timer_priv {
 
 #define MVEBU_TIMER_FIXED_RATE_25MHZ	25000000
 
-static bool early_init_done __section(".data") = false;
+static bool early_init_done(void *base)
+{
+	if ((readl(base + TIMER_CTRL) & TIMER0_EN) &&
+	    (readl(base + TIMER0_RELOAD) == ~0))
+		return true;
+	return false;
+}
 
 /* Common functions for early (boot) and DM based timer */
 static void orion_timer_init(void *base, enum input_clock_type type)
 {
 	/* Only init the timer once */
-	if (early_init_done)
+	if (early_init_done(base))
 		return;
-	early_init_done = true;
 
 	writel(~0, base + TIMER0_VAL);
 	writel(~0, base + TIMER0_RELOAD);
@@ -72,7 +77,7 @@ unsigned long notrace timer_early_get_rate(void)
 	if (IS_ENABLED(CONFIG_ARCH_MVEBU))
 		return MVEBU_TIMER_FIXED_RATE_25MHZ;
 	else
-		return CONFIG_SYS_TCLK;
+		return CFG_SYS_TCLK;
 }
 
 /**
@@ -117,7 +122,7 @@ static int orion_timer_probe(struct udevice *dev)
 	if (type == INPUT_CLOCK_25MHZ)
 		uc_priv->clock_rate = MVEBU_TIMER_FIXED_RATE_25MHZ;
 	else
-		uc_priv->clock_rate = CONFIG_SYS_TCLK;
+		uc_priv->clock_rate = CFG_SYS_TCLK;
 	orion_timer_init(priv->base, type);
 
 	return 0;
