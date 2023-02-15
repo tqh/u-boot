@@ -223,7 +223,7 @@ static int prepare_bootmenu_entry(struct bootmenu_data *menu,
 	return 1;
 }
 
-#if (CONFIG_IS_ENABLED(CMD_BOOTEFI_BOOTMGR)) && (CONFIG_IS_ENABLED(CMD_EFICONFIG))
+#if (IS_ENABLED(CONFIG_CMD_BOOTEFI_BOOTMGR)) && (IS_ENABLED(CONFIG_CMD_EFICONFIG))
 /**
  * prepare_uefi_bootorder_entry() - generate the uefi bootmenu entries
  *
@@ -343,7 +343,7 @@ static struct bootmenu_data *bootmenu_create(int delay)
 	if (ret < 0)
 		goto cleanup;
 
-#if (CONFIG_IS_ENABLED(CMD_BOOTEFI_BOOTMGR)) && (CONFIG_IS_ENABLED(CMD_EFICONFIG))
+#if (IS_ENABLED(CONFIG_CMD_BOOTEFI_BOOTMGR)) && (IS_ENABLED(CONFIG_CMD_EFICONFIG))
 	if (i < MAX_COUNT - 1) {
 		efi_status_t efi_ret;
 
@@ -437,7 +437,7 @@ static void menu_display_statusline(struct menu *m)
 	printf(ANSI_CURSOR_POSITION, menu->count + 5, 1);
 	puts(ANSI_CLEAR_LINE);
 	printf(ANSI_CURSOR_POSITION, menu->count + 6, 3);
-	puts("Press UP/DOWN to move, ENTER to select, ESC/CTRL+C to quit");
+	puts("Press UP/DOWN to move, ENTER to select, ESC to quit");
 	puts(ANSI_CLEAR_LINE_TO_END);
 	printf(ANSI_CURSOR_POSITION, menu->count + 7, 1);
 	puts(ANSI_CLEAR_LINE);

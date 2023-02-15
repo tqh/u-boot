@@ -75,6 +75,7 @@ Shell commands
    cmd/sbi
    cmd/sf
    cmd/scp03
+   cmd/seama
    cmd/setexpr
    cmd/size
    cmd/sleep
@@ -83,6 +84,7 @@ Shell commands
    cmd/sm
    cmd/temperature
    cmd/tftpput
+   cmd/trace
    cmd/true
    cmd/ums
    cmd/ut

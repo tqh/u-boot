@@ -3,7 +3,7 @@
 VERSION = 2023
 PATCHLEVEL = 04
 SUBLEVEL =
-EXTRAVERSION = -rc1
+EXTRAVERSION = -rc2
 NAME =
 
 # *DOCUMENTATION*
@@ -318,8 +318,8 @@ endif
 #
 ifeq ($(HOSTOS),darwin)
 # get major and minor product version (e.g. '10' and '6' for Snow Leopard)
-DARWIN_MAJOR_VERSION	= $(shell sw_vers -productVersion | cut -f 1 -d '.')
-DARWIN_MINOR_VERSION	= $(shell sw_vers -productVersion | cut -f 2 -d '.')
+DARWIN_MAJOR_VERSION	:= $(shell sw_vers -productVersion | cut -f 1 -d '.')
+DARWIN_MINOR_VERSION	:= $(shell sw_vers -productVersion | cut -f 2 -d '.')
 
 os_x_before	= $(shell if [ $(DARWIN_MAJOR_VERSION) -le $(1) -a \
 	$(DARWIN_MINOR_VERSION) -le $(2) ] ; then echo "$(3)"; else echo "$(4)"; fi ;)
@@ -1082,7 +1082,7 @@ expect = $(foreach cfg,$(1),y)
 
 # Show a deprecation message
 # Args:
-# 1: List of CONFIG_DM_... to migrate to (e.g. "CONFIG_DM_MMC CONFIG_BLK")
+# 1: List of options to migrate to (e.g. "CONFIG_DM_MMC CONFIG_BLK")
 # 2: Name of component (e.g . "Ethernet drivers")
 # 3: Release deadline (e.g. "v202.07")
 # 4: Condition to require before checking (e.g. "$(CONFIG_NET)")
@@ -1190,19 +1190,22 @@ endif
 u-boot.bin: u-boot-fit-dtb.bin FORCE
 	$(call if_changed,copy)
 
-u-boot-dtb.bin: u-boot-nodtb.bin dts/dt.dtb FORCE
-	$(call if_changed,cat)
-
-else ifeq ($(CONFIG_OF_SEPARATE).$(CONFIG_OF_OMIT_DTB),y.)
-u-boot-dtb.bin: u-boot-nodtb.bin dts/dt.dtb FORCE
-	$(call if_changed,cat)
-
 ifneq ($(CONFIG_MPC85XX_HAVE_RESET_VECTOR)$(CONFIG_OF_SEPARATE),yy)
-u-boot.bin: u-boot-dtb.bin FORCE
-	$(call if_changed,copy)
+u-boot-dtb.bin: u-boot-nodtb.bin dts/dt.dtb FORCE
+	$(call if_changed,cat)
 endif
 
-else ifneq ($(CONFIG_MPC85XX_HAVE_RESET_VECTOR)$(CONFIG_OF_SEPARATE),yy)
+else ifeq ($(CONFIG_OF_SEPARATE).$(CONFIG_OF_OMIT_DTB),y.)
+
+ifneq ($(CONFIG_MPC85XX_HAVE_RESET_VECTOR)$(CONFIG_OF_SEPARATE),yy)
+u-boot-dtb.bin: u-boot-nodtb.bin dts/dt.dtb FORCE
+	$(call if_changed,cat)
+endif
+
+u-boot.bin: u-boot-dtb.bin FORCE
+	$(call if_changed,copy)
+
+else
 u-boot.bin: u-boot-nodtb.bin FORCE
 	$(call if_changed,copy)
 endif
@@ -1451,9 +1454,6 @@ u-boot-with-spl.kwb: u-boot.bin spl/u-boot-spl.bin FORCE
 	$(call if_changed,mkimage)
 	$(BOARD_SIZE_CHECK)
 
-u-boot.sha1:	u-boot.bin
-		tools/ubsha1 u-boot.bin
-
 u-boot.dis:	u-boot
 		$(OBJDUMP) -d $< > $@
 
@@ -1528,8 +1528,7 @@ MKIMAGEFLAGS_u-boot.ubl = -n $(UBL_CONFIG) -T ublimage -e $(CONFIG_TEXT_BASE)
 u-boot.ubl: u-boot-with-spl.bin FORCE
 	$(call if_changed,mkimage)
 
-MKIMAGEFLAGS_u-boot-spl.ais = -s -n $(if $(CONFIG_AIS_CONFIG_FILE), \
-	$(srctree)/$(CONFIG_AIS_CONFIG_FILE:"%"=%),"/dev/null") \
+MKIMAGEFLAGS_u-boot-spl.ais = -s -n "/dev/null" \
 	-T aisimage -e $(CONFIG_SPL_TEXT_BASE)
 spl/u-boot-spl.ais: spl/u-boot-spl.bin FORCE
 	$(call if_changed,mkimage)
@@ -1581,7 +1580,7 @@ u-boot-with-nand-spl.sfp: u-boot-spl-padx4.sfp u-boot.img FORCE
 endif
 
 ifeq ($(CONFIG_MPC85XX_HAVE_RESET_VECTOR)$(CONFIG_OF_SEPARATE),yy)
-u-boot.bin: u-boot-nodtb.bin u-boot.dtb u-boot-br.bin FORCE
+u-boot-dtb.bin: u-boot-nodtb.bin u-boot.dtb u-boot-br.bin FORCE
 	$(call if_changed,binman)
 
 OBJCOPYFLAGS_u-boot-br.bin := -O binary -j .bootpg -j .resetvec
@@ -1651,17 +1650,6 @@ OBJCOPYFLAGS_u-boot-with-spl-pbl.bin = -I binary -O binary --pad-to=$(CONFIG_SPL
 			  --gap-fill=0xff
 
 u-boot-with-spl-pbl.bin: spl/u-boot-spl.pbl $(UBOOT_BINLOAD) FORCE
-	$(call if_changed,pad_cat)
-
-# PPC4xx needs the SPL at the end of the image, since the reset vector
-# is located at 0xfffffffc. So we can't use the "u-boot-img.bin" target
-# and need to introduce a new build target with the full blown U-Boot
-# at the start padded up to the start of the SPL image. And then concat
-# the SPL image to the end.
-
-OBJCOPYFLAGS_u-boot-img-spl-at-end.bin := -I binary -O binary \
-	--pad-to=$(CONFIG_UBOOT_PAD_TO) --gap-fill=0xff
-u-boot-img-spl-at-end.bin: u-boot.img spl/u-boot-spl.bin FORCE
 	$(call if_changed,pad_cat)
 
 quiet_cmd_u-boot-elf ?= LD      $@
@@ -2004,10 +1992,6 @@ dtbs: prepare3 scripts_dtc
 
 dtbs_install:
 	$(Q)$(MAKE) $(dtbinst)=$(dtstree)
-
-ifdef CONFIG_OF_EARLY_FLATTREE
-all: dtbs
-endif
 
 endif
 

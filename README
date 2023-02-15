@@ -286,13 +286,6 @@ The following options need to be configured:
 		same as CFG_SYS_DDR_SDRAM_BASE for  all Power SoCs. But
 		it could be different for ARM SoCs.
 
-- MIPS CPU options:
-		CONFIG_XWAY_SWAP_BYTES
-
-		Enable compilation of tools/xway-swap-bytes needed for Lantiq
-		XWAY SoCs for booting from NOR flash. The U-Boot image needs to
-		be swapped if a flash programmer is used.
-
 - ARM options:
 		CFG_SYS_EXCEPTION_VECTORS_HIGH
 
@@ -1810,6 +1803,7 @@ sspi	- SPI utility commands
 base	- print or set address offset
 printenv- print environment variables
 pwm	- control pwm channels
+seama   - load SEAMA NAND image
 setenv	- set environment variables
 saveenv - save environment variables to persistent storage
 protect - enable or disable FLASH write protection
